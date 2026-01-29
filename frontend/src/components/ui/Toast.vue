@@ -1,17 +1,17 @@
 <template>
   <Teleport to="body">
-    <div class="fixed right-4 top-4 z-[200] flex flex-col gap-2">
+    <div class="fixed right-4 top-4 z-[200] flex max-w-[min(420px,90vw)] flex-col gap-2">
       <TransitionGroup name="toast">
         <div
           v-for="toast in toasts"
           :key="toast.id"
-          class="flex min-w-[320px] items-start gap-3 rounded-2xl border border-border bg-card px-4 py-3 shadow-lg"
+          class="flex w-full items-center gap-3 rounded-2xl border border-border bg-card px-4 py-3 shadow-lg"
           :class="toastClass(toast.type)"
         >
-          <div class="flex-shrink-0">
+          <div class="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-full border border-border bg-background">
             <svg
               v-if="toast.type === 'success'"
-              class="h-5 w-5 text-emerald-500"
+              class="h-4.5 w-4.5 text-emerald-600"
               fill="none"
               viewBox="0 0 24 24"
               stroke="currentColor"
@@ -20,7 +20,7 @@
             </svg>
             <svg
               v-else-if="toast.type === 'error'"
-              class="h-5 w-5 text-rose-500"
+              class="h-4.5 w-4.5 text-rose-600"
               fill="none"
               viewBox="0 0 24 24"
               stroke="currentColor"
@@ -29,7 +29,7 @@
             </svg>
             <svg
               v-else-if="toast.type === 'warning'"
-              class="h-5 w-5 text-amber-500"
+              class="h-4.5 w-4.5 text-amber-600"
               fill="none"
               viewBox="0 0 24 24"
               stroke="currentColor"
@@ -38,7 +38,7 @@
             </svg>
             <svg
               v-else
-              class="h-5 w-5 text-sky-500"
+              class="h-4.5 w-4.5 text-sky-600"
               fill="none"
               viewBox="0 0 24 24"
               stroke="currentColor"
@@ -47,11 +47,13 @@
             </svg>
           </div>
           <div class="flex-1">
-            <p v-if="toast.title" class="text-sm font-medium text-foreground">{{ toast.title }}</p>
-            <p class="text-sm text-muted-foreground" :class="{ 'mt-1': toast.title }">{{ toast.message }}</p>
+            <p v-if="toast.title" class="text-sm font-semibold text-foreground">{{ toast.title }}</p>
+            <p class="text-sm text-muted-foreground" :class="{ 'mt-0.5': toast.title }">
+              {{ toast.message }}
+            </p>
           </div>
           <button
-            class="flex-shrink-0 text-muted-foreground transition-colors hover:text-foreground"
+            class="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted/50 hover:text-foreground"
             @click="removeToast(toast.id)"
           >
             <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -86,17 +88,17 @@ const toastClass = (type: string) => {
 <style scoped>
 .toast-enter-active,
 .toast-leave-active {
-  transition: all 0.3s ease;
+  transition: all 0.28s ease;
 }
 
 .toast-enter-from {
   opacity: 0;
-  transform: translateX(100%);
+  transform: translateY(-6px) translateX(12px);
 }
 
 .toast-leave-to {
   opacity: 0;
-  transform: translateX(100%);
+  transform: translateY(-6px) translateX(12px);
 }
 
 .toast-move {

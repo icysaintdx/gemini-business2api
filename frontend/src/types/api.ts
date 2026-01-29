@@ -34,6 +34,9 @@ export interface AdminAccount {
 export interface AccountsListResponse {
   total: number
   accounts: AdminAccount[]
+  migration_notice?: {
+    message: string
+  }
 }
 
 export interface AccountConfigItem {
