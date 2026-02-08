@@ -161,9 +161,9 @@ class GeminiAutomation:
     def _run_flow(self, page, email: str, mail_client) -> dict:
         """执行登录流程"""
 
-        # 记录开始时间，用于邮件时间过滤
+        # 记录任务开始时间，用于邮件时间过滤（全流程固定，不随重发更新）
         from datetime import datetime
-        send_time = datetime.now()
+        task_start_time = datetime.now()
 
         # Step 1: 导航到首页并设置 Cookie
         self._log("info", f"🌐 打开登录页面: {email}")
@@ -242,17 +242,15 @@ class GeminiAutomation:
 
         # Step 5: 轮询邮件获取验证码（3次，每次5秒间隔）
         self._log("info", "📬 等待邮箱验证码...")
-        code = mail_client.poll_for_code(timeout=15, interval=5, since_time=send_time)
+        code = mail_client.poll_for_code(timeout=15, interval=5, since_time=task_start_time)
 
         if not code:
             self._log("warning", "⚠️ 验证码超时，15秒后重新发送...")
             time.sleep(15)
-            # 更新发送时间（在点击按钮之前记录）
-            send_time = datetime.now()
             # 尝试点击重新发送按钮
             if self._click_resend_code_button(page):
                 # 再次轮询验证码（3次，每次5秒间隔）
-                code = mail_client.poll_for_code(timeout=15, interval=5, since_time=send_time)
+                code = mail_client.poll_for_code(timeout=15, interval=5, since_time=task_start_time)
                 if not code:
                     self._log("error", "❌ 重新发送后仍未收到验证码")
                     self._save_screenshot(page, "code_timeout_after_resend")

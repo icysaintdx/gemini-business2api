@@ -357,6 +357,8 @@ PROXY_FOR_CHAT = _proxy_chat
 _NO_PROXY = ",".join(filter(None, {_no_proxy_auth, _no_proxy_chat}))
 if _NO_PROXY:
     os.environ["NO_PROXY"] = _NO_PROXY
+else:
+    os.environ.pop("NO_PROXY", None)
 BASE_URL = config.basic.base_url
 SESSION_SECRET_KEY = config.security.session_secret_key
 SESSION_EXPIRE_HOURS = config.session.expire_hours
@@ -1577,6 +1579,8 @@ async def admin_update_settings(request: Request, new_settings: dict = Body(...)
         _NO_PROXY = ",".join(filter(None, {_no_proxy_auth, _no_proxy_chat}))
         if _NO_PROXY:
             os.environ["NO_PROXY"] = _NO_PROXY
+        else:
+            os.environ.pop("NO_PROXY", None)
         BASE_URL = config.basic.base_url
         LOGO_URL = config.public_display.logo_url
         CHAT_URL = config.public_display.chat_url
