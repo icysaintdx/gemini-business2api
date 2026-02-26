@@ -294,6 +294,46 @@
             </div>
 
             <div class="rounded-2xl border border-border bg-card p-4">
+              <div class="flex items-center justify-between gap-2">
+                <p class="text-xs uppercase tracking-[0.3em] text-muted-foreground">每日配额</p>
+                <HelpTip text="基于 Google 官方限额的主动配额计数，达到上限后自动切换账号。0 表示不限制该类型。" />
+              </div>
+              <div class="mt-4 space-y-3">
+                <Checkbox v-model="localSettings.quota_limits.enabled">
+                  启用主动配额计数
+                </Checkbox>
+                <label class="block text-xs text-muted-foreground">对话每日上限</label>
+                <input
+                  v-model.number="localSettings.quota_limits.text_daily_limit"
+                  type="number"
+                  min="0"
+                  max="9999"
+                  class="w-full rounded-2xl border border-input bg-background px-3 py-2 text-sm"
+                  placeholder="120"
+                />
+                <label class="block text-xs text-muted-foreground">绘图每日上限</label>
+                <input
+                  v-model.number="localSettings.quota_limits.images_daily_limit"
+                  type="number"
+                  min="0"
+                  max="9999"
+                  class="w-full rounded-2xl border border-input bg-background px-3 py-2 text-sm"
+                  placeholder="2"
+                />
+                <label class="block text-xs text-muted-foreground">视频每日上限</label>
+                <input
+                  v-model.number="localSettings.quota_limits.videos_daily_limit"
+                  type="number"
+                  min="0"
+                  max="9999"
+                  class="w-full rounded-2xl border border-input bg-background px-3 py-2 text-sm"
+                  placeholder="1"
+                />
+                <p class="text-xs text-muted-foreground">每日北京时间 16:00 重置（对齐 Google 太平洋时间午夜）</p>
+              </div>
+            </div>
+
+            <div class="rounded-2xl border border-border bg-card p-4">
               <p class="text-xs uppercase tracking-[0.3em] text-muted-foreground">公开展示</p>
               <div class="mt-4 space-y-3">
                 <label class="block text-xs text-muted-foreground">Logo 地址</label>
@@ -408,6 +448,7 @@ const videoOutputOptions = [
 const imageModelOptions = computed(() => {
   const baseOptions = [
     { label: 'Gemini 3 Pro Preview', value: 'gemini-3-pro-preview' },
+    { label: 'Gemini 3.1 Pro Preview', value: 'gemini-3.1-pro-preview' },
     { label: 'Gemini 3 Flash Preview', value: 'gemini-3-flash-preview' },
     { label: 'Gemini 2.5 Pro', value: 'gemini-2.5-pro' },
     { label: 'Gemini 2.5 Flash', value: 'gemini-2.5-flash' },
@@ -477,6 +518,17 @@ watch(settings, (value) => {
   next.retry.auto_refresh_accounts_seconds = Number.isFinite(next.retry.auto_refresh_accounts_seconds)
     ? next.retry.auto_refresh_accounts_seconds
     : 60
+  next.quota_limits = next.quota_limits || {}
+  next.quota_limits.enabled = next.quota_limits.enabled ?? true
+  next.quota_limits.text_daily_limit = Number.isFinite(next.quota_limits.text_daily_limit)
+    ? next.quota_limits.text_daily_limit
+    : 120
+  next.quota_limits.images_daily_limit = Number.isFinite(next.quota_limits.images_daily_limit)
+    ? next.quota_limits.images_daily_limit
+    : 2
+  next.quota_limits.videos_daily_limit = Number.isFinite(next.quota_limits.videos_daily_limit)
+    ? next.quota_limits.videos_daily_limit
+    : 1
   localSettings.value = next
 })
 

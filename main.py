@@ -49,7 +49,7 @@ from core.google_api import (
     upload_context_file,
     get_session_file_metadata,
     download_image_with_jwt,
-    save_image_to_hf
+    save_image_to_hf,
 )
 from core.account import (
     AccountManager,
@@ -433,7 +433,8 @@ MODEL_MAPPING = {
     "gemini-2.5-flash": "gemini-2.5-flash",
     "gemini-2.5-pro": "gemini-2.5-pro",
     "gemini-3-flash-preview": "gemini-3-flash-preview",
-    "gemini-3-pro-preview": "gemini-3-pro-preview"
+    "gemini-3-pro-preview": "gemini-3-pro-preview",
+    "gemini-3.1-pro-preview": "gemini-3.1-pro-preview"
 }
 
 # ---------- HTTP 客户端 ----------
@@ -651,7 +652,7 @@ async def serve_logo():
         return FileResponse(logo_path)
     raise HTTPException(404, "Not Found")
 
-@app.get("/admin/health")
+@app.get("/health")
 async def health_check():
     """健康检查端点，用于 Docker HEALTHCHECK"""
     return {"status": "ok"}
@@ -1197,10 +1198,13 @@ async def admin_get_accounts(request: Request):
             "cooldown_reason": cooldown_reason,
             "conversation_count": account_manager.conversation_count,
             "session_usage_count": account_manager.session_usage_count,
-            "quota_status": quota_status  # 新增配额状态
+            "quota_status": quota_status,
+            "trial_end": config.trial_end,
+            "trial_days_remaining": config.get_trial_days_remaining(),
         })
 
     return {"total": len(accounts_info), "accounts": accounts_info}
+
 
 @app.get("/admin/accounts-config")
 @require_login()
@@ -1485,6 +1489,12 @@ async def admin_get_settings(request: Request):
             "scheduled_refresh_enabled": config.retry.scheduled_refresh_enabled,
             "scheduled_refresh_interval_minutes": config.retry.scheduled_refresh_interval_minutes
         },
+        "quota_limits": {
+            "enabled": config.quota_limits.enabled,
+            "text_daily_limit": config.quota_limits.text_daily_limit,
+            "images_daily_limit": config.quota_limits.images_daily_limit,
+            "videos_daily_limit": config.quota_limits.videos_daily_limit
+        },
         "public_display": {
             "logo_url": config.public_display.logo_url,
             "chat_url": config.public_display.chat_url
@@ -1555,6 +1565,14 @@ async def admin_update_settings(request: Request, new_settings: dict = Body(...)
         retry.setdefault("images_rate_limit_cooldown_seconds", config.retry.images_rate_limit_cooldown_seconds)
         retry.setdefault("videos_rate_limit_cooldown_seconds", config.retry.videos_rate_limit_cooldown_seconds)
         new_settings["retry"] = retry
+
+        # 配额上限配置
+        quota_limits = dict(new_settings.get("quota_limits") or {})
+        quota_limits.setdefault("enabled", config.quota_limits.enabled)
+        quota_limits.setdefault("text_daily_limit", config.quota_limits.text_daily_limit)
+        quota_limits.setdefault("images_daily_limit", config.quota_limits.images_daily_limit)
+        quota_limits.setdefault("videos_daily_limit", config.quota_limits.videos_daily_limit)
+        new_settings["quota_limits"] = quota_limits
 
         # 保存旧配置用于对比
         old_proxy_for_auth = PROXY_FOR_AUTH
@@ -2414,6 +2432,7 @@ async def stream_chat_generator(session: str, text_content: str, file_ids: List[
     start_time = time.time()
     full_content = ""
     first_response_time = None
+    usage_counted = False
 
     # 记录发送给API的内容
     text_preview = text_content[:500] + "...(已截断)" if len(text_content) > 500 else text_content
@@ -2562,22 +2581,22 @@ async def stream_chat_generator(session: str, text_content: str, file_ids: List[
                         logger.debug(f"[API] [{account_manager.config.account_id}] [req_{request_id}] Reply#{idx}无text，content_obj结构: {json.dumps(content_obj, ensure_ascii=False)[:300]}")
                         continue
 
+                    # 首次收到响应时记录时间和计数
+                    if first_response_time is None:
+                        first_response_time = time.time()
+                        if request is not None:
+                            request.state.first_response_time = first_response_time
+                    if not usage_counted:
+                        usage_counted = True
+                        account_manager.conversation_count += 1
+                        account_manager.increment_daily_usage(get_request_quota_type(model_name))
+
                     # 区分思考过程和正常内容
                     if content_obj.get("thought"):
                         # 思考过程使用 reasoning_content 字段（类似 OpenAI o1）
-                        if first_response_time is None:
-                            first_response_time = time.time()
-                            if request is not None:
-                                request.state.first_response_time = first_response_time
                         chunk = create_chunk(chat_id, created_time, model_name, {"reasoning_content": text}, None)
                         yield f"data: {chunk}\n\n"
                     else:
-                        if first_response_time is None:
-                            first_response_time = time.time()
-                            if request is not None:
-                                request.state.first_response_time = first_response_time
-                            # 第一次响应时统计成功次数
-                            account_manager.conversation_count += 1
                         # 正常内容使用 content 字段
                         full_content += text
                         chunk = create_chunk(chat_id, created_time, model_name, {"content": text}, None)
@@ -2597,6 +2616,11 @@ async def stream_chat_generator(session: str, text_content: str, file_ids: List[
                 quota_type = get_request_quota_type(model_name)
                 if quota_type in ("images", "videos"):
                     logger.info(f"[API] [{account_manager.config.account_id}] [req_{request_id}] 媒体生成请求，无文本内容属正常情况")
+                    # 媒体生成成功，计入每日配额（避免重复计数）
+                    if not usage_counted:
+                        usage_counted = True
+                        account_manager.conversation_count += 1
+                        account_manager.increment_daily_usage(quota_type)
                 else:
                     logger.warning(f"[API] [{account_manager.config.account_id}] [req_{request_id}] ⚠️ 空响应警告: 收到{response_count}个响应但无文本内容，可能是思考模型未生成最终回答或上游错误")
                     # 打印第一个响应对象的完整结构用于调试

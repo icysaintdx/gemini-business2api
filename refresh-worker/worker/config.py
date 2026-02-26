@@ -1,0 +1,212 @@
+"""
+Simplified configuration for the refresh worker.
+
+Only includes refresh-related fields from BasicConfig and RetryConfig.
+Loads from database via storage.load_settings_sync().
+"""
+
+import os
+import logging
+from typing import Optional
+from pydantic import BaseModel, Field
+from dotenv import load_dotenv
+
+from worker import storage
+
+load_dotenv()
+
+logger = logging.getLogger(__name__)
+
+
+def _parse_bool(value, default: bool) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    if isinstance(value, (int, float)):
+        return value != 0
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in ("1", "true", "yes", "y", "on"):
+            return True
+        if lowered in ("0", "false", "no", "n", "off"):
+            return False
+    return default
+
+
+# ==================== Config models ====================
+
+class BasicConfig(BaseModel):
+    """Refresh-related basic config"""
+    proxy_for_auth: str = Field(default="", description="账户操作代理地址")
+    duckmail_base_url: str = Field(default="https://api.duckmail.sbs", description="DuckMail API地址")
+    duckmail_api_key: str = Field(default="", description="DuckMail API key")
+    duckmail_verify_ssl: bool = Field(default=True, description="DuckMail SSL校验")
+    temp_mail_provider: str = Field(default="moemail", description="临时邮箱提供商")
+    moemail_base_url: str = Field(default="https://moemail.nanohajimi.mom", description="Moemail API地址")
+    moemail_api_key: str = Field(default="", description="Moemail API key")
+    moemail_domain: str = Field(default="", description="Moemail 邮箱域名")
+    freemail_base_url: str = Field(default="http://your-freemail-server.com", description="Freemail API地址")
+    freemail_jwt_token: str = Field(default="", description="Freemail JWT Token")
+    freemail_verify_ssl: bool = Field(default=True, description="Freemail SSL校验")
+    freemail_domain: str = Field(default="", description="Freemail 邮箱域名")
+    mail_proxy_enabled: bool = Field(default=False, description="是否启用临时邮箱代理")
+    gptmail_base_url: str = Field(default="https://mail.chatgpt.org.uk", description="GPTMail API地址")
+    gptmail_api_key: str = Field(default="gpt-test", description="GPTMail API key")
+    gptmail_verify_ssl: bool = Field(default=True, description="GPTMail SSL校验")
+    gptmail_domain: str = Field(default="", description="GPTMail 邮箱域名")
+    browser_headless: bool = Field(default=False, description="浏览器无头模式")
+    refresh_window_hours: int = Field(default=1, ge=0, le=24, description="过期刷新窗口（小时）")
+
+
+class RetryConfig(BaseModel):
+    """Refresh-related retry config"""
+    scheduled_refresh_enabled: bool = Field(default=False, description="是否启用定时刷新任务")
+    scheduled_refresh_interval_minutes: int = Field(default=30, ge=0, le=720, description="定时刷新检测间隔（分钟）")
+
+
+class WorkerConfig(BaseModel):
+    """Worker configuration (aggregates basic + retry)"""
+    basic: BasicConfig
+    retry: RetryConfig
+
+
+# ==================== Config Manager ====================
+
+class ConfigManager:
+    """Configuration manager for the refresh worker (singleton)."""
+
+    def __init__(self):
+        self._config: Optional[WorkerConfig] = None
+        self.load()
+
+    def load(self):
+        """Load config from database."""
+        yaml_data = self._load_from_db()
+
+        basic_data = yaml_data.get("basic", {})
+
+        # Compat: migrate old proxy field
+        old_proxy = basic_data.get("proxy", "")
+        old_proxy_for_auth_bool = basic_data.get("proxy_for_auth")
+        proxy_for_auth = basic_data.get("proxy_for_auth", "")
+        if not proxy_for_auth and old_proxy:
+            if isinstance(old_proxy_for_auth_bool, bool) and old_proxy_for_auth_bool:
+                proxy_for_auth = old_proxy
+
+        basic_config = BasicConfig(
+            proxy_for_auth=str(proxy_for_auth or "").strip(),
+            duckmail_base_url=basic_data.get("duckmail_base_url") or "https://api.duckmail.sbs",
+            duckmail_api_key=str(basic_data.get("duckmail_api_key") or "").strip(),
+            duckmail_verify_ssl=_parse_bool(basic_data.get("duckmail_verify_ssl"), True),
+            temp_mail_provider=basic_data.get("temp_mail_provider") or "moemail",
+            moemail_base_url=basic_data.get("moemail_base_url") or "https://moemail.nanohajimi.mom",
+            moemail_api_key=str(basic_data.get("moemail_api_key") or "").strip(),
+            moemail_domain=str(basic_data.get("moemail_domain") or "").strip(),
+            freemail_base_url=basic_data.get("freemail_base_url") or "http://your-freemail-server.com",
+            freemail_jwt_token=str(basic_data.get("freemail_jwt_token") or "").strip(),
+            freemail_verify_ssl=_parse_bool(basic_data.get("freemail_verify_ssl"), True),
+            freemail_domain=str(basic_data.get("freemail_domain") or "").strip(),
+            mail_proxy_enabled=_parse_bool(basic_data.get("mail_proxy_enabled"), False),
+            gptmail_base_url=str(basic_data.get("gptmail_base_url") or "https://mail.chatgpt.org.uk").strip(),
+            gptmail_api_key=str(basic_data.get("gptmail_api_key") or "").strip(),
+            gptmail_verify_ssl=_parse_bool(basic_data.get("gptmail_verify_ssl"), True),
+            gptmail_domain=str(basic_data.get("gptmail_domain") or "").strip(),
+            browser_headless=_parse_bool(basic_data.get("browser_headless"), False),
+            refresh_window_hours=int(basic_data.get("refresh_window_hours", 1)),
+        )
+
+        try:
+            retry_config = RetryConfig(**yaml_data.get("retry", {}))
+        except Exception as e:
+            logger.warning(f"[WARN] Retry config load failed, using defaults: {e}")
+            retry_config = RetryConfig()
+
+        self._config = WorkerConfig(basic=basic_config, retry=retry_config)
+
+        # Apply environment variable overrides (take precedence over DB values)
+        self._apply_env_overrides()
+
+    def _apply_env_overrides(self) -> None:
+        """Override config fields with environment variables when set."""
+        env_refresh_enabled = os.getenv("FORCE_REFRESH_ENABLED")
+        if env_refresh_enabled is not None:
+            val = _parse_bool(env_refresh_enabled, self._config.retry.scheduled_refresh_enabled)
+            self._config.retry.scheduled_refresh_enabled = val
+            logger.info("[CONFIG] env override: FORCE_REFRESH_ENABLED=%s", val)
+
+        env_interval = os.getenv("REFRESH_INTERVAL_MINUTES")
+        if env_interval is not None:
+            try:
+                val = max(1, min(720, int(env_interval)))
+                self._config.retry.scheduled_refresh_interval_minutes = val
+                logger.info("[CONFIG] env override: REFRESH_INTERVAL_MINUTES=%d", val)
+            except ValueError:
+                logger.warning("[CONFIG] invalid REFRESH_INTERVAL_MINUTES=%r, ignored", env_interval)
+
+        env_window = os.getenv("REFRESH_WINDOW_HOURS")
+        if env_window is not None:
+            try:
+                val = max(0, min(24, int(env_window)))
+                self._config.basic.refresh_window_hours = val
+                logger.info("[CONFIG] env override: REFRESH_WINDOW_HOURS=%d", val)
+            except ValueError:
+                logger.warning("[CONFIG] invalid REFRESH_WINDOW_HOURS=%r, ignored", env_window)
+
+        env_headless = os.getenv("BROWSER_HEADLESS")
+        if env_headless is not None:
+            val = _parse_bool(env_headless, self._config.basic.browser_headless)
+            self._config.basic.browser_headless = val
+            logger.info("[CONFIG] env override: BROWSER_HEADLESS=%s", val)
+
+        env_proxy = os.getenv("PROXY_FOR_AUTH")
+        if env_proxy is not None:
+            self._config.basic.proxy_for_auth = env_proxy.strip()
+            logger.info("[CONFIG] env override: PROXY_FOR_AUTH=%s", "***" if env_proxy.strip() else "(empty)")
+
+    def _load_from_db(self) -> dict:
+        """Load config from database (allows empty config)."""
+        if storage.is_database_enabled():
+            try:
+                data = storage.load_settings_sync()
+                if data is None:
+                    logger.warning("[WARN] No settings found (empty DB or connection issue), using defaults")
+                    return {}
+                if isinstance(data, dict):
+                    return data
+                return {}
+            except RuntimeError:
+                raise
+            except Exception as e:
+                logger.error(f"[ERROR] Database load failed: {e}")
+                raise RuntimeError(f"Database load failed: {e}")
+
+        logger.error("[ERROR] Database not enabled")
+        raise RuntimeError("DATABASE_URL not configured, worker cannot start")
+
+    def reload(self):
+        """Hot-reload config from database."""
+        self.load()
+
+    @property
+    def config(self) -> WorkerConfig:
+        return self._config
+
+
+# ==================== Global singleton ====================
+
+config_manager = ConfigManager()
+
+
+class _ConfigProxy:
+    """Config proxy that always returns the latest config."""
+    @property
+    def basic(self):
+        return config_manager.config.basic
+
+    @property
+    def retry(self):
+        return config_manager.config.retry
+
+
+config = _ConfigProxy()

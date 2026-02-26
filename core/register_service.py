@@ -158,6 +158,11 @@ class RegisterService(BaseTaskService[RegisterTask]):
                 error = result.get('error', '未知错误')
                 self._append_log(task, "error", f"❌ 注册失败: {error}")
 
+            # 账号之间等待 10 秒，避免资源争抢和风控
+            if idx < task.count - 1 and not task.cancel_requested:
+                self._append_log(task, "info", "⏳ 等待 10 秒后处理下一个账号...")
+                await asyncio.sleep(10)
+
         if task.cancel_requested:
             task.status = TaskStatus.CANCELLED
         else:
@@ -213,7 +218,7 @@ class RegisterService(BaseTaskService[RegisterTask]):
 
         try:
             log_cb("info", "🔐 步骤 3/3: 执行 Gemini 自动登录...")
-            result = automation.login_and_extract(client.email, client)
+            result = automation.login_and_extract(client.email, client, is_new_account=True)
         except Exception as exc:
             log_cb("error", f"❌ 自动登录异常: {exc}")
             return {"success": False, "error": str(exc)}

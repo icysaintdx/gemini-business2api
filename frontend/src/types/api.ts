@@ -4,6 +4,8 @@ export interface QuotaStatus {
   available: boolean
   remaining_seconds?: number
   reason?: string  // 受限原因（如"对话配额受限"）
+  daily_used?: number
+  daily_limit?: number
 }
 
 export interface AccountQuotaStatus {
@@ -31,6 +33,8 @@ export interface AdminAccount {
   cooldown_reason: string | null
   conversation_count: number
   quota_status: AccountQuotaStatus
+  trial_end?: string | null
+  trial_days_remaining?: number | null
 }
 
 export interface AccountsListResponse {
@@ -120,6 +124,12 @@ export interface Settings {
   }
   session: {
     expire_hours: number
+  }
+  quota_limits: {
+    enabled: boolean
+    text_daily_limit: number
+    images_daily_limit: number
+    videos_daily_limit: number
   }
 }
 

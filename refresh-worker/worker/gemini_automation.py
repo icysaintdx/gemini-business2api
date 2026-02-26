@@ -1,5 +1,5 @@
 """
-Gemini自动化登录模块（用于新账号注册）
+Gemini自动化登录模块（用于账号刷新）
 """
 import os
 import json
@@ -11,7 +11,7 @@ from typing import Optional
 from urllib.parse import quote
 
 from DrissionPage import ChromiumPage, ChromiumOptions
-from core.base_task_service import TaskCancelledError
+from worker.refresh_service import TaskCancelledError
 
 
 # 常量
@@ -26,16 +26,6 @@ CHROMIUM_PATHS = [
     "/usr/bin/google-chrome-stable",
 ]
 
-# 注册时随机使用的真实英文姓名（避免明显的机器人特征）
-REGISTER_NAMES = [
-    "James Smith", "John Johnson", "Robert Williams", "Michael Brown", "William Jones",
-    "David Garcia", "Mary Miller", "Patricia Davis", "Jennifer Rodriguez", "Linda Martinez",
-    "Barbara Anderson", "Susan Thomas", "Jessica Jackson", "Sarah White", "Karen Harris",
-    "Lisa Martin", "Nancy Thompson", "Betty Garcia", "Margaret Martinez", "Sandra Robinson",
-    "Ashley Clark", "Dorothy Rodriguez", "Emma Lewis", "Olivia Lee", "Ava Walker",
-    "Emily Hall", "Abigail Allen", "Madison Young", "Elizabeth Hernandez", "Charlotte King",
-]
-
 
 def _find_chromium_path() -> Optional[str]:
     """查找可用的 Chromium/Chrome 浏览器路径"""
@@ -43,6 +33,11 @@ def _find_chromium_path() -> Optional[str]:
         if os.path.isfile(path) and os.access(path, os.X_OK):
             return path
     return None
+
+
+def _data_file_path(name: str) -> str:
+    """Worker local data directory helper."""
+    return os.path.join("data", name)
 
 
 class GeminiAutomation:
@@ -74,7 +69,7 @@ class GeminiAutomation:
             except Exception:
                 pass
 
-    def login_and_extract(self, email: str, mail_client, is_new_account: bool = False) -> dict:
+    def login_and_extract(self, email: str, mail_client) -> dict:
         """执行登录并提取配置"""
         page = None
         user_data_dir = None
@@ -83,7 +78,7 @@ class GeminiAutomation:
             user_data_dir = getattr(page, 'user_data_dir', None)
             self._page = page
             self._user_data_dir = user_data_dir
-            return self._run_flow(page, email, mail_client, is_new_account=is_new_account)
+            return self._run_flow(page, email, mail_client)
         except TaskCancelledError:
             raise
         except Exception as exc:
@@ -168,8 +163,8 @@ class GeminiAutomation:
 
         return page
 
-    def _run_flow(self, page, email: str, mail_client, is_new_account: bool = False) -> dict:
-        """执行登录流程（is_new_account=True 时启用注册专用的增强用户名处理）"""
+    def _run_flow(self, page, email: str, mail_client) -> dict:
+        """执行登录流程"""
 
         # 记录任务开始时间，用于邮件时间过滤（全流程固定，不随重发更新）
         from datetime import datetime
@@ -287,30 +282,9 @@ class GeminiAutomation:
             code_input.input(code, clear=True)
             time.sleep(0.5)
 
-        # 提交验证码：先回车，再找验证按钮兜底
+        # 直接使用回车提交，不再查找按钮
         self._log("info", "⏎ 提交验证码")
         code_input.input("\n")
-        time.sleep(1)
-        # 如果回车没触发，找验证按钮点击
-        if "verify-oob-code" in page.url:
-            verify_btn = self._find_verify_button(page)
-            if verify_btn:
-                try:
-                    verify_btn.click()
-                    self._log("info", "✅ 已点击验证按钮（兜底）")
-                except Exception:
-                    pass
-
-        # [注册专用] 验证码提交后立刻轮询姓名输入框（参考代码方式，不等待12秒）
-        if is_new_account:
-            self._log("info", "📝 [注册] 验证码已提交，立即等待姓名输入页面...")
-            if self._handle_username_setup(page, is_new_account=True):
-                self._log("info", "✅ 姓名填写完成，等待工作台 URL...")
-                if self._wait_for_business_params(page, timeout=45):
-                    self._log("info", "🎊 注册成功，提取配置...")
-                    return self._extract_config(page, email)
-            # 姓名步骤失败或未出现，继续走通用流程兜底
-            self._log("info", "⚠️ 姓名步骤未完成，走通用流程兜底...")
 
         # Step 7: 等待页面自动重定向（提交验证码后 Google 会自动跳转）
         self._log("info", "⏳ 等待验证后跳转...")
@@ -341,8 +315,8 @@ class GeminiAutomation:
             page.get("https://business.gemini.google/", timeout=self.timeout)
             time.sleep(5)
 
-        # Step 11: 检查是否需要设置用户名（仅登录刷新走此路径，注册已在早期处理）
-        if not is_new_account and "cid" not in page.url:
+        # Step 11: 检查是否需要设置用户名
+        if "cid" not in page.url:
             if self._handle_username_setup(page):
                 time.sleep(5)
 
@@ -547,7 +521,6 @@ class GeminiAutomation:
     def _save_network_packets(self, packets) -> None:
         """保存网络日志（仅用于调试）"""
         try:
-            from core.storage import _data_file_path
             base_dir = _data_file_path(os.path.join("logs", "network"))
             os.makedirs(base_dir, exist_ok=True)
             ts = datetime.now().strftime("%Y%m%d-%H%M%S")
@@ -608,27 +581,15 @@ class GeminiAutomation:
         return None
 
     def _simulate_human_input(self, element, text: str) -> bool:
-        """模拟人类输入（逐字符输入，带随机延迟）
-
-        Args:
-            element: 输入框元素
-            text: 要输入的文本
-
-        Returns:
-            bool: 是否成功
-        """
+        """模拟人类输入（逐字符输入，带随机延迟）"""
         try:
-            # 先点击输入框获取焦点
             element.click()
             time.sleep(random.uniform(0.1, 0.3))
 
-            # 逐字符输入
             for char in text:
                 element.input(char)
-                # 随机延迟：模拟人类打字速度（50-150ms/字符）
                 time.sleep(random.uniform(0.05, 0.15))
 
-            # 输入完成后短暂停顿
             time.sleep(random.uniform(0.2, 0.5))
             return True
         except Exception:
@@ -650,7 +611,6 @@ class GeminiAutomation:
         """点击重新发送验证码按钮"""
         time.sleep(2)
 
-        # 查找包含重新发送关键词的按钮（与 _find_verify_button 相反）
         try:
             buttons = page.eles("tag:button")
             for btn in buttons:
@@ -693,105 +653,65 @@ class GeminiAutomation:
             time.sleep(1)
         return False
 
-    def _handle_username_setup(self, page, is_new_account: bool = False) -> bool:
-        """处理用户名设置页面（is_new_account=True 时启用按钮兜底和延长超时）"""
+    def _handle_username_setup(self, page) -> bool:
+        """处理用户名设置页面"""
         current_url = page.url
 
         if "auth.business.gemini.google/login" in current_url:
             return False
 
-        # 精准选择器（参考实际页面 DOM，优先级从高到低）
         selectors = [
-            "css:input[formcontrolname='fullName']",
-            "css:input#mat-input-0",
-            "css:input[placeholder='全名']",
-            "css:input[placeholder='Full name']",
+            "css:input[type='text']",
             "css:input[name='displayName']",
             "css:input[aria-label*='用户名' i]",
             "css:input[aria-label*='display name' i]",
-            "css:input[type='text']",
         ]
 
-        # 轮询等待输入框出现（最多30秒，每秒检查一次）
-        # 与参考代码对齐：页面加载慢时不会过早放弃
         username_input = None
-        self._log("info", "⏳ 等待用户名输入框出现（最多30秒）...")
-        for _ in range(30):
-            for selector in selectors:
-                try:
-                    el = page.ele(selector, timeout=1)
-                    if el:
-                        username_input = el
-                        self._log("info", f"✅ 找到用户名输入框: {selector}")
-                        break
-                except Exception:
-                    continue
-            if username_input:
-                break
-            time.sleep(1)
+        for selector in selectors:
+            try:
+                username_input = page.ele(selector, timeout=2)
+                if username_input:
+                    break
+            except Exception:
+                continue
 
         if not username_input:
-            self._log("warning", "⚠️ 30秒内未找到用户名输入框，跳过此步骤")
             return False
 
-        name = random.choice(REGISTER_NAMES)
-        self._log("info", f"✏️ 输入姓名: {name}")
+        suffix = "".join(random.choices(string.ascii_letters + string.digits, k=3))
+        username = f"Test{suffix}"
 
         try:
-            # 清空输入框
             username_input.click()
             time.sleep(0.2)
             username_input.clear()
             time.sleep(0.1)
 
-            # 尝试模拟人类输入，失败则降级到直接注入
-            if not self._simulate_human_input(username_input, name):
-                username_input.input(name)
+            if not self._simulate_human_input(username_input, username):
+                username_input.input(username)
                 time.sleep(0.3)
 
-            # 回车提交
-            username_input.input("\n")
+            buttons = page.eles("tag:button")
+            submit_btn = None
+            for btn in buttons:
+                text = (btn.text or "").strip().lower()
+                if any(kw in text for kw in ["确认", "提交", "继续", "submit", "continue", "confirm", "save", "保存", "下一步", "next"]):
+                    submit_btn = btn
+                    break
 
-            if is_new_account:
-                # 注册专用：回车后等待1.5秒，若未跳转则用按钮兜底
-                time.sleep(1.5)
-                if "cid" not in page.url:
-                    self._log("info", "⌨️ 回车未跳转，尝试点击提交按钮...")
-                    try:
-                        for btn in page.eles("tag:button"):
-                            try:
-                                if btn.is_displayed() and btn.is_enabled():
-                                    btn.click()
-                                    self._log("info", "✅ 已点击提交按钮（兜底）")
-                                    time.sleep(1)
-                                    break
-                            except Exception:
-                                continue
-                    except Exception as e:
-                        self._log("warning", f"⚠️ 按钮兜底失败: {e}")
-
-                # 注册专用：等待45秒，失败则刷新再等15秒
-                if not self._wait_for_cid(page, timeout=45):
-                    self._log("warning", "⚠️ 用户名提交后未检测到 cid 参数，尝试刷新...")
-                    page.refresh()
-                    time.sleep(3)
-                    if not self._wait_for_cid(page, timeout=15):
-                        self._log("error", "❌ 刷新后仍未检测到 cid 参数")
-                        self._save_screenshot(page, "step7_after_verify")
-                        return False
+            if submit_btn:
+                submit_btn.click()
             else:
-                # 登录刷新：原有30秒逻辑
-                if not self._wait_for_cid(page, timeout=30):
-                    self._log("warning", "⚠️ 用户名提交后未检测到 cid 参数")
-                    return False
+                username_input.input("\n")
 
+            time.sleep(5)
             return True
-        except Exception as e:
-            self._log("warning", f"⚠️ 用户名设置异常: {e}")
+        except Exception:
             return False
 
     def _extract_config(self, page, email: str) -> dict:
-        """提取配置（轮询等待 cookie 到位）"""
+        """提取配置"""
         try:
             if "cid/" not in page.url:
                 page.get("https://business.gemini.google/", timeout=self.timeout)
@@ -804,22 +724,11 @@ class GeminiAutomation:
             config_id = url.split("cid/")[1].split("?")[0].split("/")[0]
             csesidx = url.split("csesidx=")[1].split("&")[0] if "csesidx=" in url else ""
 
-            # 轮询等待关键 cookie 到位（最多10秒）
-            ses = None
-            host = None
-            ses_obj = None
-            for _ in range(10):
-                cookies = page.cookies()
-                ses = next((c["value"] for c in cookies if c["name"] == "__Secure-C_SES"), None)
-                host = next((c["value"] for c in cookies if c["name"] == "__Host-C_OSES"), None)
-                ses_obj = next((c for c in cookies if c["name"] == "__Secure-C_SES"), None)
-                if ses and host:
-                    break
-                time.sleep(1)
+            cookies = page.cookies()
+            ses = next((c["value"] for c in cookies if c["name"] == "__Secure-C_SES"), None)
+            host = next((c["value"] for c in cookies if c["name"] == "__Host-C_OSES"), None)
 
-            if not ses or not host:
-                self._log("warning", f"⚠️ Cookie 不完整 (ses={'有' if ses else '无'}, host={'有' if host else '无'})")
-
+            ses_obj = next((c for c in cookies if c["name"] == "__Secure-C_SES"), None)
             # 使用北京时区，确保时间计算正确（Cookie expiry 是 UTC 时间戳）
             beijing_tz = timezone(timedelta(hours=8))
             if ses_obj and "expiry" in ses_obj:
@@ -870,10 +779,8 @@ class GeminiAutomation:
                 # 格式3: 日期数组 "[2026,3,25]" 形式 (batchexecute格式)
                 m = re.search(r'\[(\d{4}),(\d{1,2}),(\d{1,2})\].*?\[(\d{4}),(\d{1,2}),(\d{1,2})\]', source)
                 if m:
-                    # 取第二个日期（结束日期）
                     try:
                         end_date = f"{m.group(4):0>4}-{int(m.group(5)):02d}-{int(m.group(6)):02d}"
-                        # 简单校验年份合理
                         if 2025 <= int(m.group(4)) <= 2030:
                             self._log("info", f"📅 试用期到期日: {end_date}")
                             return end_date
@@ -897,7 +804,7 @@ class GeminiAutomation:
             except Exception:
                 pass
 
-            # ——— 方式2: 跳转到 /settings（不带 billing/plans 后缀，SPA可以处理）———
+            # ——— 方式2: 跳转到 /settings———
             try:
                 settings_url = f"https://business.gemini.google/cid/{config_id}/settings?csesidx={csesidx}"
                 page.get(settings_url, timeout=self.timeout)
@@ -930,7 +837,6 @@ class GeminiAutomation:
     def _save_screenshot(self, page, name: str) -> None:
         """保存截图"""
         try:
-            from core.storage import _data_file_path
             screenshot_dir = _data_file_path("automation")
             os.makedirs(screenshot_dir, exist_ok=True)
             path = os.path.join(screenshot_dir, f"{name}_{int(time.time())}.png")
