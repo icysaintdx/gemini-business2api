@@ -82,6 +82,13 @@
       >
         自动刷新
       </button>
+      <button
+        class="rounded-full px-4 py-2 text-xs font-medium transition-colors"
+        :class="hideTaskLogs ? 'bg-primary text-primary-foreground' : 'border border-border text-muted-foreground hover:text-foreground'"
+        @click="hideTaskLogs = !hideTaskLogs"
+      >
+        隐藏刷新日志
+      </button>
     </div>
 
     <div v-if="statusMessage" class="mt-3 text-xs" :class="statusToneClass">
@@ -204,7 +211,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { logsApi } from '@/api'
 import SelectMenu from '@/components/ui/SelectMenu.vue'
 import ConfirmDialog from '@/components/ui/ConfirmDialog.vue'
@@ -241,6 +248,7 @@ const confirmOpen = ref(false)
 const autoRefreshEnabled = ref(true)
 const collapsedState = ref<Record<string, boolean>>({})
 const rawView = ref(true)
+const hideTaskLogs = ref(true)
 const rawLogContainer = ref<HTMLDivElement | null>(null)
 const structuredLogContainer = ref<HTMLDivElement | null>(null)
 const structuredRenderLimit = 1000
@@ -253,7 +261,7 @@ let isFetching = false
 const filters = reactive({
   level: '',
   search: '',
-  limit: 300,
+  limit: 1000,
 })
 
 const levelOptions = [
@@ -424,6 +432,11 @@ const buildGroupedLogs = (items: ParsedLogEntry[]): GroupedLogState => {
   return { ungrouped, groups: groupList }
 }
 
+const TASK_LOG_PREFIXES = ['[REFRESH]', '[REGISTER]']
+
+const isTaskLog = (message: string) =>
+  TASK_LOG_PREFIXES.some(prefix => message.includes(prefix))
+
 const structuredView = computed(() => {
   const ungrouped = groupedLogs.value.ungrouped
   const groups = groupedLogs.value.groups
@@ -493,7 +506,10 @@ const fetchLogs = async () => {
       search: filters.search || undefined,
     })
     logs.value = response.logs
-    parsedLogs.value = response.logs.map(parseLogEntry)
+    const filtered = hideTaskLogs.value
+      ? response.logs.filter(log => !isTaskLog(log.message))
+      : response.logs
+    parsedLogs.value = filtered.map(parseLogEntry)
     groupedLogs.value = buildGroupedLogs(parsedLogs.value)
     stats.value = response.stats
   } catch (error: any) {
@@ -606,6 +622,16 @@ onMounted(() => {
   fetchLogs()
   startAutoRefresh()
   document.addEventListener('visibilitychange', handleVisibilityChange)
+})
+
+watch(hideTaskLogs, () => {
+  // Re-filter from raw logs when toggle changes
+  const filtered = hideTaskLogs.value
+    ? logs.value.filter(log => !isTaskLog(log.message))
+    : logs.value
+  parsedLogs.value = filtered.map(parseLogEntry)
+  groupedLogs.value = buildGroupedLogs(parsedLogs.value)
+  requestAnimationFrame(scrollToBottom)
 })
 
 onBeforeUnmount(() => {

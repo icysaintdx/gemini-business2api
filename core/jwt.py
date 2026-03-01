@@ -89,8 +89,9 @@ class JWTManager:
             },
         )
         if r.status_code != 200:
-            logger.error(f"[AUTH] [{self.config.account_id}] {req_tag}JWT 刷新失败: {r.status_code}")
-            raise HTTPException(r.status_code, "getoxsrf failed")
+            error_body = r.text[:200] if r.text else ""
+            logger.error(f"[AUTH] [{self.config.account_id}] {req_tag}JWT 刷新失败: {r.status_code} {error_body}")
+            raise HTTPException(r.status_code, f"getoxsrf failed: {error_body}")
 
         txt = r.text[4:] if r.text.startswith(")]}'") else r.text
         data = json.loads(txt)

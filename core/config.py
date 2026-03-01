@@ -51,8 +51,8 @@ class BasicConfig(BaseModel):
     duckmail_base_url: str = Field(default="https://api.duckmail.sbs", description="DuckMail API地址")
     duckmail_api_key: str = Field(default="", description="DuckMail API key")
     duckmail_verify_ssl: bool = Field(default=True, description="DuckMail SSL校验")
-    temp_mail_provider: str = Field(default="moemail", description="临时邮箱提供商: moemail/duckmail/freemail/gptmail")
-    moemail_base_url: str = Field(default="https://moemail.nanohajimi.mom", description="Moemail API地址")
+    temp_mail_provider: str = Field(default="duckmail", description="临时邮箱提供商: duckmail/moemail/freemail/gptmail/cfmail")
+    moemail_base_url: str = Field(default="https://moemail.app", description="Moemail API地址")
     moemail_api_key: str = Field(default="", description="Moemail API key")
     moemail_domain: str = Field(default="", description="Moemail 邮箱域名（可选，留空则随机选择）")
     freemail_base_url: str = Field(default="http://your-freemail-server.com", description="Freemail API地址")
@@ -64,11 +64,16 @@ class BasicConfig(BaseModel):
     gptmail_api_key: str = Field(default="gpt-test", description="GPTMail API key")
     gptmail_verify_ssl: bool = Field(default=True, description="GPTMail SSL校验")
     gptmail_domain: str = Field(default="", description="GPTMail 邮箱域名（可选，留空则随机选择）")
+    cfmail_base_url: str = Field(default="", description="Cloudflare Mail API地址")
+    cfmail_api_key: str = Field(default="", description="Cloudflare Mail 访问密码（x-custom-auth）")
+    cfmail_verify_ssl: bool = Field(default=True, description="Cloudflare Mail SSL校验")
+    cfmail_domain: str = Field(default="", description="Cloudflare Mail 邮箱域名（可选，留空随机）")
     browser_engine: str = Field(default="dp", description="浏览器引擎")
     browser_headless: bool = Field(default=False, description="自动化浏览器无头模式")
     refresh_window_hours: int = Field(default=1, ge=0, le=24, description="过期刷新窗口（小时）")
     register_default_count: int = Field(default=1, ge=1, description="默认注册数量")
     register_domain: str = Field(default="", description="DuckMail 域名（推荐）")
+    image_expire_hours: int = Field(default=12, ge=-1, le=720, description="图片/视频过期时间（小时），-1为永不删除")
 
 
 class ImageGenerationConfig(BaseModel):
@@ -104,7 +109,12 @@ class RetryConfig(BaseModel):
     auto_refresh_accounts_seconds: int = Field(default=60, ge=0, le=600, description="自动刷新账号间隔（秒，0禁用）")
     # 定时刷新配置
     scheduled_refresh_enabled: bool = Field(default=False, description="是否启用定时刷新任务")
-    scheduled_refresh_interval_minutes: int = Field(default=30, ge=0, le=720, description="定时刷新检测间隔（分钟，0-12小时）")
+    scheduled_refresh_cron: str = Field(default="08:00,20:00", description="刷新时间，如 '08:00,20:00' 或 '*/120'(每120分钟)")
+    refresh_batch_size: int = Field(default=5, ge=1, le=20, description="每批刷新账号数")
+    refresh_batch_interval_minutes: int = Field(default=30, ge=5, le=120, description="批次间等待时间(分钟)")
+    refresh_cooldown_hours: float = Field(default=12.0, ge=1, le=48, description="同一账号刷新冷却期(小时)")
+    # 向后兼容：旧配置可能只有这个字段，读取时自动转换为 */N cron 格式
+    scheduled_refresh_interval_minutes: int = Field(default=0, ge=0, le=720, description="(旧字段，已废弃) 定时刷新检测间隔")
 
 class QuotaLimitsConfig(BaseModel):
     """每日配额上限配置（基于 Google 官方限额，用于主动配额计数）"""
@@ -224,11 +234,16 @@ class ConfigManager:
             gptmail_api_key=str(basic_data.get("gptmail_api_key") or "").strip(),
             gptmail_verify_ssl=_parse_bool(basic_data.get("gptmail_verify_ssl"), True),
             gptmail_domain=str(basic_data.get("gptmail_domain") or "").strip(),
+            cfmail_base_url=str(basic_data.get("cfmail_base_url") or "").strip(),
+            cfmail_api_key=str(basic_data.get("cfmail_api_key") or "").strip(),
+            cfmail_verify_ssl=_parse_bool(basic_data.get("cfmail_verify_ssl"), True),
+            cfmail_domain=str(basic_data.get("cfmail_domain") or "").strip(),
             browser_engine=basic_data.get("browser_engine") or "dp",
             browser_headless=_parse_bool(basic_data.get("browser_headless"), False),
             refresh_window_hours=int(refresh_window_raw),
             register_default_count=int(register_default_raw),
             register_domain=str(register_domain_raw or "").strip(),
+            image_expire_hours=int(basic_data.get("image_expire_hours", 12)),
         )
 
         # 4. 加载其他配置（从数据库，带容错处理）

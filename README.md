@@ -38,7 +38,7 @@
 
 - ✅ OpenAI API 完全兼容 - 无缝对接现有工具
 - ✅ 多账号负载均衡 - 轮询与故障自动切换
-- ✅ 自动化账号管理 - 支持自动注册与登录，集成 DuckMail 和 Microsoft 邮箱，支持无头浏览器模式
+- ✅ 自动化账号管理 - 支持自动注册与登录，集成多种临时邮箱，支持无头浏览器模式
 - ✅ 流式输出 - 实时响应
 - ✅ 多模态输入 - 100+ 文件类型（图片、PDF、Office 文档、音频、视频、代码等）
 - ✅ 图片生成 & 图生图 - 模型可配置，Base64 或 URL 返回
@@ -47,7 +47,7 @@
 - ✅ 日志与监控 - 实时状态与统计信息
 - ✅ 代理支持 - 通过设置面板配置
 - ✅ 内置管理面板 - 在线配置与账号管理
-- ✅ 可选 PostgreSQL 后端 - 支持账户/设置/统计持久化 [感谢PR](https://github.com/Dreamy-rain/gemini-business2api/pull/4)
+- ✅ PostgreSQL / SQLite 存储 - 账户/设置/统计持久化
 
 ## 🤖 模型功能
 
@@ -62,129 +62,65 @@
 | `gemini-imagen`          | ✅    | ✅        | ✅          | ✅        | -        |
 | `gemini-veo`             | ✅    | ✅        | ✅          | -        | ✅        |
 
-**虚拟模型说明**：
-- `gemini-imagen`：专用图片生成模型，强制启用图片生成功能
-- `gemini-veo`：专用视频生成模型，强制启用视频生成功能
-
-#### 数据库迁移（首次使用或升级）
-
-如果你有旧的本地文件（accounts.json/settings.yaml/stats.json），需要运行迁移脚本：
-
-```bash
-# 直接运行迁移脚本
-python scripts/migrate_to_database.py
-
-# Zeabur 环境：点击服务 → 指令 → 输入以下命令
-python scripts/migrate_to_database.py
-```
-
-**迁移脚本会自动检测**：
-- ✅ 配置了 `DATABASE_URL` → 迁移到 PostgreSQL（远程数据库）
-- ✅ 未配置 `DATABASE_URL` → 迁移到 SQLite（本地 data.db）
-
-**迁移内容**：
-- ✅ 从 kv_store（旧表结构）迁移到新表（仅 PostgreSQL）
-- ✅ 从本地文件（accounts.json/settings.yaml/stats.json）迁移到数据库
-- ✅ 迁移后自动重命名本地文件（防止重复）
-- ✅ 保留 kv_store 作为备份（仅 PostgreSQL）
-
-> **注意**：SQLite 和 PostgreSQL 表结构完全兼容，以后可以从 SQLite 迁移到 PostgreSQL
-
-## 🚀 快速开始
-
-### 方式一：Zeabur 部署（推荐，支持自动更新）
-
-大佬对Linux和Docker的部署优化 [感谢PR](https://github.com/Dreamy-rain/gemini-business2api/pull/37)
-
-#### 第一步：Fork 仓库
-
-点击本页面右上角的 **Fork** 按钮，将项目复制到你的 GitHub 账号。
-
-#### 第二步：部署到 Zeabur
-
-1. 登录 [Zeabur](https://zeabur.com) 并创建新项目
-2. 点击 **创建项目** → **共享集群 / Silicon Valley, United States（腾讯云）** → **创建项目** → **部署新服务** → **连接Github（没有授权一路授权即可）** → **选择你刚刚 Fork 的仓库** → **部署即可**
-3. 点击服务卡片 → **变量** 标签，添加环境变量：
-
-| 变量名         | 必填 | 说明                                          |
-| -------------- | ---- | --------------------------------------------- |
-| `ADMIN_KEY`    | ✅    | 管理面板登录密钥，自己设置一个                |
-| `DATABASE_URL` | 推荐 | PostgreSQL 连接串（见下方"数据库持久化"说明） |
-
-> 💡 **强烈建议配置 DATABASE_URL**，否则 Zeabur 重启后数据会丢失。免费数据库获取：[neon.tech](https://neon.tech)
-
-4. 点击 **重新部署** 使环境变量生效
-5. 等待构建完成（约 1-2 分钟）
-
-#### 如何更新？
-
-当本项目有更新时：
-
-1. 打开你 Fork 的 GitHub 仓库页面
-2. 点击 **Sync fork** → **Update branch**
-3. Zeabur 会自动检测变更并重新部署，无需手动操作
+> `gemini-imagen`：专用图片生成模型 · `gemini-veo`：专用视频生成模型
 
 ---
 
-### 方式二：使用安装脚本（本地部署）
+## 🚀 快速开始
 
-#### 前置要求
+### 方式一：Docker Compose（推荐）
 
-- **Python 3.11**（必需，项目使用 uv 自动管理 Python 版本）
-- **Git**
-- **Node.js & npm**（用于构建前端）
-- **uv**（安装脚本会自动安装）
+**支持 ARM64 和 AMD64 架构**
 
-> **⚠️ 注意**：Python 3.12 不支持，因为部分依赖使用 `distutils`（Python 3.12 已移除）。安装脚本会自动下载并安装 Python 3.11，无需手动安装。
+```bash
+git clone https://github.com/Dreamy-rain/gemini-business2api.git
+cd gemini-business2api
+cp .env.example .env
+# 编辑 .env 设置 ADMIN_KEY
 
-### 方式一：使用安装脚本（推荐）
+docker-compose up -d
 
-**Linux/macOS (WSL):**
+# 查看日志
+docker-compose logs -f
+
+# 更新到最新版本
+docker-compose pull && docker-compose up -d
+```
+
+---
+
+### 方式二：安装脚本
+
+> **前置要求**：Git、Node.js & npm（构建前端用）。脚本会自动安装 Python 3.11 和 uv。
+
+**Linux / macOS / WSL：**
 ```bash
 git clone https://github.com/Dreamy-rain/gemini-business2api.git
 cd gemini-business2api
 bash setup.sh
-
 # 编辑 .env 设置 ADMIN_KEY
-
-source .venv/bin/activate  # Linux/macOS
-# .venv\Scripts\activate.bat  # Windows
-
+source .venv/bin/activate
 python main.py
-
-# pm2后台运行
+# pm2 后台运行
 pm2 start main.py --name gemini-api --interpreter ./.venv/bin/python3
 ```
 
-**Windows:**
+**Windows：**
 ```cmd
 git clone https://github.com/Dreamy-rain/gemini-business2api.git
 cd gemini-business2api
 setup.bat
-
 # 编辑 .env 设置 ADMIN_KEY
-
-source .venv/bin/activate  # Linux/macOS
-# .venv\Scripts\activate.bat  # Windows
-
+.venv\Scripts\activate.bat
 python main.py
-
-# pm2后台运行
+# pm2 后台运行
 pm2 start main.py --name gemini-api --interpreter ./.venv/Scripts/python.exe
 ```
 
-**安装脚本功能：**
-- ✅ 自动安装/更新 uv（现代 Python 包管理器）
-- ✅ 自动下载并安装 Python 3.11（如果系统中没有）
-- ✅ 自动同步最新代码
-- ✅ 更新前端到最新版本
-- ✅ 创建/更新 Python 虚拟环境
-- ✅ 安装/更新依赖
-- ✅ 自动创建 `.env` 配置文件（如不存在）
+安装脚本会自动完成：uv 安装、Python 3.11 下载、依赖安装、前端构建、`.env` 创建。
+更新项目时重新运行同一脚本即可。
 
-**首次安装：** 完成后编辑 `.env` 设置 `ADMIN_KEY`，然后运行 `python main.py`
-
-**更新项目：** 直接运行相同命令即可，脚本会自动更新所有组件（代码、依赖、前端、Python 环境）
+---
 
 ### 方式三：手动部署
 
@@ -192,92 +128,213 @@ pm2 start main.py --name gemini-api --interpreter ./.venv/Scripts/python.exe
 git clone https://github.com/Dreamy-rain/gemini-business2api.git
 cd gemini-business2api
 
-# 安装 uv（必需）
 curl -LsSf https://astral.sh/uv/install.sh | sh
-
-# 安装 Python 3.11（必需）
 uv python install 3.11
 
-# 构建前端
-cd frontend
-npm install
-npm run build
-cd ..
+cd frontend && npm install && npm run build && cd ..
 
-# 创建虚拟环境
 uv venv --python 3.11 .venv
-source .venv/bin/activate  # Linux/macOS
-# .venv\Scripts\activate.bat  # Windows
-
-# 安装 Python 依赖
+source .venv/bin/activate  # Windows: .venv\Scripts\activate.bat
 uv pip install -r requirements.txt
 
 cp .env.example .env
-# win: copy .env.example .env
 # 编辑 .env 设置 ADMIN_KEY
 python main.py
-
-# pm2后台运行
-pm2 start main.py --name gemini-api --interpreter ./.venv/bin/python3
 ```
 
-### 方式四：Docker Compose（推荐用于生产环境）
-
-**支持 ARM64 和 AMD64 架构**
-
-```bash
-# 1. 克隆仓库
-git clone https://github.com/Dreamy-rain/gemini-business2api.git
-cd gemini-business2api
-
-# 2. 配置环境变量
-cp .env.example .env
-# 编辑 .env 设置 ADMIN_KEY
-
-# 3. 启动服务
-docker-compose up -d
-
-# 4. 查看日志
-docker-compose logs -f
-
-# 5. 更新到最新版本
-docker-compose pull && docker-compose up -d
-```
-
-
-### 数据库持久化（可选）（强烈推荐）
-
-💡 提示：远程环境(Hugging Face/Linux)和本地环境可共用同一数据库，账户数据将自动保持同步
-
-- HF Spaces 环境建议开启，否则重启会丢数据
-- 设置 `DATABASE_URL=postgresql://user:password@host/dbname?sslmode=require`
-  - 本地：写入 `.env`
-  - HF Spaces：Settings -> Variables/Secrets
-- 启用后账户/设置/统计写入数据库（HF Spaces 重启不丢）
-- 注意：连接串包含密码，请勿公开
-
-```
-#  Neon 获取 DATABASE_URL（推荐）
-1. 打开 https://neon.tech 并登录
-2. Create project -> 选择区域
-3. 进入项目页，找到 Connection string 并复制
-4. 形如：
-   postgresql://user:password@ep-xxx.neon.tech/dbname?sslmode=require
-```
+---
 
 ### 访问方式
 
-- 管理面板：`http://localhost:7860/`（使用 `ADMIN_KEY` 登录）
-- OpenAI 兼容接口：`http://localhost:7860/v1/chat/completions`
+- **管理面板**：`http://localhost:7860/`（使用 `ADMIN_KEY` 登录）
+- **API 接口**：`http://localhost:7860/v1/chat/completions`
 
-### 配置提示
+---
 
-- 账号配置优先读取 `ACCOUNTS_CONFIG`，也可在管理面板中录入并保存至 `data/accounts.json`。
-- 如需鉴权，可在管理面板设置中配置 `API_KEY` 保护 `/v1/chat/completions`。
+## 🗄️ 数据库持久化
 
-### 更多文档
+设置 `DATABASE_URL` 可将账户、设置、统计写入数据库，避免容器重启丢数据。未设置时自动使用 SQLite（本地 `data.db`）。
 
-- 支持的文件类型：[docs/SUPPORTED_FILE_TYPES.md](docs/SUPPORTED_FILE_TYPES.md)
+**配置方式：**
+- 本地部署 → 写入 `.env`
+- 云平台 → 在平台环境变量中设置
+
+```
+DATABASE_URL=postgresql://user:password@host/dbname?sslmode=require
+```
+
+**免费 PostgreSQL 推荐：**
+
+| 服务 | 免费额度 | 获取方式 |
+|------|---------|---------|
+| [Neon](https://neon.tech) | 512MB 存储 / 100 CPUH 月 | 注册 → Create Project → 复制 Connection string |
+| [Aiven](https://aiven.io) | 额度更充裕 | 注册 → 创建 PostgreSQL 服务 → 复制连接串 |
+
+> `postgres://` 和 `postgresql://` 两种格式均可直接使用，无需手动转换。
+
+<details>
+<summary>⚠️ 常见问题：定期保存失败 / ConnectionDoesNotExistError</summary>
+
+如果日志出现类似以下错误：
+
+```
+ERROR [COOLDOWN] 冷却期保存失败: connection was closed in the middle of operation
+asyncpg.exceptions.ConnectionDoesNotExistError: connection was closed in the middle of operation
+```
+
+这是因为部分免费 PostgreSQL 服务（如 Aiven 免费版）会主动关闭长时间空闲的连接。**不影响正常使用**，下次操作会自动重新连接。如频繁出现，建议换用 [Neon](https://neon.tech) 或升级数据库套餐。
+
+</details>
+
+<details>
+<summary>📦 数据库迁移（从旧版升级）</summary>
+
+如果有旧的本地文件（`accounts.json` / `settings.yaml` / `stats.json`），运行迁移脚本：
+
+```bash
+python scripts/migrate_to_database.py
+```
+
+迁移脚本会自动检测环境（PostgreSQL / SQLite），迁移完成后自动重命名旧文件。
+
+
+</details>
+
+---
+
+## 📡 API 接口
+
+完全兼容 OpenAI API 格式，可直接对接 ChatGPT-Next-Web、LobeChat、OpenCat 等客户端。
+
+| 接口 | 方法 | 说明 |
+|------|------|------|
+| `/v1/chat/completions` | POST | 对话补全（支持流式） |
+| `/v1/models` | GET | 获取可用模型列表 |
+| `/v1/images/generations` | POST | 图片生成（文生图） |
+| `/v1/images/edits` | POST | 图片编辑（图生图） |
+| `/health` | GET | 健康检查 |
+
+**调用示例：**
+
+```bash
+curl http://localhost:7860/v1/chat/completions \
+  -H "Authorization: Bearer your-api-key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gemini-2.5-flash",
+    "messages": [{"role": "user", "content": "你好"}],
+    "stream": true
+  }'
+```
+
+> `API_KEY` 在管理面板 → 系统设置中配置，留空则公开访问，支持多个 Key 逗号分隔。
+
+---
+
+## 📧 邮箱提供商配置
+
+项目支持 4 种临时邮箱，用于自动注册账号。在 **管理面板 → 系统设置 → 临时邮箱提供商** 中切换。
+
+### Moemail（默认推荐）
+
+开源临时邮箱服务，开箱即用。
+
+- **项目地址**：[github.com/beilunyang/moemail](https://github.com/beilunyang/moemail)
+- **官网**：[moemail.app](https://moemail.app)
+- **配置项**：API 地址 + API Key + 域名（可选）
+
+### DuckMail
+
+临时邮箱 API 服务，推荐配置自定义域名。
+
+- **域名管理**：[domain.duckmail.sbs](https://domain.duckmail.sbs/)
+- **配置项**：API 地址 + API Key + 注册域名
+
+### GPTMail
+
+临时邮箱 API 服务，无需密码即可使用。
+
+- **默认地址**：`https://mail.chatgpt.org.uk`
+- **默认 API Key**：`gpt-test`
+- **配置项**：API 地址 + API Key + 域名（可选）
+
+### Freemail
+
+需要自行搭建的临时邮箱服务，适合有服务器的用户。
+
+- **项目地址**：[github.com/idinging/freemail](https://github.com/idinging/freemail)
+- **配置项**：自部署服务地址 + JWT Token + 域名（可选）
+
+> **提示**：所有邮箱配置均在管理面板中完成，无需手动编辑配置文件。Microsoft 邮箱登录也在管理面板中操作。
+
+---
+
+## 🌐 推荐部署平台
+
+除本地 Docker Compose 外，以下平台均支持 Docker 镜像部署：
+
+| 平台 | 免费额度 | 特点 |
+|------|---------|------|
+| [Render](https://render.com) | ✅ 有 | 支持 Docker、自动 SSL、免费 PostgreSQL |
+| [Railway](https://railway.app) | $5/月额度 | 一键 Docker 部署、自带数据库 |
+| [Fly.io](https://fly.io) | ✅ 有 | 全球边缘部署、支持持久化卷 |
+| [Claw Cloud](https://claw.cloud) | ✅ 有 | 容器云平台，简单易用 |
+| 自建 VPS（推荐） | — | 完全可控，配合 Docker Compose |
+
+> Docker 镜像：`cooooookk/gemini-business2api:latest`
+>
+> 部署时设置环境变量 `ADMIN_KEY` 和 `DATABASE_URL` 即可。
+
+### Zeabur 部署教程
+
+1. Fork 本仓库到你的 GitHub
+2. 登录 [Zeabur](https://zeabur.com) → **创建项目** → **共享集群** → **部署新服务** → **连接 GitHub** → 选择 Fork 的仓库
+3. 添加环境变量：
+
+   | 变量名 | 必填 | 说明 |
+   |--------|------|------|
+   | `ADMIN_KEY` | ✅ | 管理面板登录密钥 |
+   | `DATABASE_URL` | 可选 | PostgreSQL 连接串（推荐配置，避免重启丢数据） |
+
+4. **持久化挂载目录**（重要）：
+
+   在服务设置中添加持久化存储：
+
+   | 硬盘 ID | 挂载目录 |
+   |---------|---------|
+   | `data` | `/app/data` |
+
+5. 点击 **重新部署** 使配置生效
+
+**更新方式**：GitHub 仓库 → **Sync fork** → **Update branch**，Zeabur 会自动重新部署。
+
+---
+
+## 🔄 独立刷新服务
+
+如果需要将账号刷新服务单独部署（与主 API 分离），可使用 [`refresh-worker` 分支](https://github.com/Dreamy-rain/gemini-business2api/tree/refresh-worker)：
+
+```bash
+git clone -b refresh-worker https://github.com/Dreamy-rain/gemini-business2api.git gemini-refresh-worker
+cd gemini-refresh-worker
+cp .env.example .env
+# 编辑 .env 设置 DATABASE_URL
+docker-compose up -d
+```
+
+该服务从数据库读取账号，独立执行定时刷新，支持 cron 调度、分批执行、冷却防重复。适合需要刷新服务与 API 服务分离部署的场景。
+
+---
+
+## 🌐 Socks5 免费代理池
+
+自动注册/刷新账号时可配置代理以提高成功率。推荐使用免费 Socks5 代理池：
+
+- **项目地址**：[github.com/Dreamy-rain/socks5-proxy](https://github.com/Dreamy-rain/socks5-proxy)
+- **说明**：免费代理不太稳定，但能一定程度提高注册成功率
+- **使用方式**：在管理面板 → 系统设置 → 代理设置中配置
+
+---
 
 ## 📸 功能展示
 
@@ -310,6 +367,10 @@ docker-compose pull && docker-compose up -d
     <td><img src="docs/img/img_4.png" alt="图片效果 4" /></td>
   </tr>
 </table>
+
+### 更多文档
+
+- 支持的文件类型：[SUPPORTED_FILE_TYPES.md](docs/SUPPORTED_FILE_TYPES.md)
 
 ## ⭐ Star History
 

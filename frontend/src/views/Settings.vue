@@ -166,7 +166,7 @@
                     v-model="localSettings.basic.moemail_base_url"
                     type="text"
                     class="w-full rounded-2xl border border-input bg-background px-3 py-2 text-sm"
-                    placeholder="https://moemail.nanohajimi.mom"
+                    placeholder="https://moemail.app"
                   />
                   <label class="block text-xs text-muted-foreground">Moemail API 密钥</label>
                   <input
@@ -234,6 +234,34 @@
                   <label class="block text-xs text-muted-foreground">GPTMail 邮箱域名（可选，不带@）</label>
                   <input
                     v-model="localSettings.basic.gptmail_domain"
+                    type="text"
+                    class="w-full rounded-2xl border border-input bg-background px-3 py-2 text-sm"
+                    placeholder="留空则随机选择"
+                  />
+                </template>
+
+                <!-- Cloudflare Mail 配置 -->
+                <template v-if="localSettings.basic.temp_mail_provider === 'cfmail'">
+                  <Checkbox v-model="localSettings.basic.cfmail_verify_ssl">
+                    Cloudflare Mail SSL 校验
+                  </Checkbox>
+                  <label class="block text-xs text-muted-foreground">Cloudflare Mail API 地址</label>
+                  <input
+                    v-model="localSettings.basic.cfmail_base_url"
+                    type="text"
+                    class="w-full rounded-2xl border border-input bg-background px-3 py-2 text-sm"
+                    placeholder="https://your-cfmail-instance.example.com"
+                  />
+                  <label class="block text-xs text-muted-foreground">访问密码（x-custom-auth，无密码留空）</label>
+                  <input
+                    v-model="localSettings.basic.cfmail_api_key"
+                    type="text"
+                    class="w-full rounded-2xl border border-input bg-background px-3 py-2 text-sm"
+                    placeholder="留空则不使用密码"
+                  />
+                  <label class="block text-xs text-muted-foreground">邮箱域名（可选，不带@）</label>
+                  <input
+                    v-model="localSettings.basic.cfmail_domain"
                     type="text"
                     class="w-full rounded-2xl border border-input bg-background px-3 py-2 text-sm"
                     placeholder="留空则随机选择"
@@ -490,7 +518,7 @@ watch(settings, (value) => {
     ? next.basic.duckmail_api_key
     : ''
   next.basic.temp_mail_provider = next.basic.temp_mail_provider || defaultMailProvider
-  next.basic.moemail_base_url = next.basic.moemail_base_url || 'https://moemail.nanohajimi.mom'
+  next.basic.moemail_base_url = next.basic.moemail_base_url || 'https://moemail.app'
   next.basic.moemail_api_key = typeof next.basic.moemail_api_key === 'string'
     ? next.basic.moemail_api_key
     : ''
@@ -513,6 +541,16 @@ watch(settings, (value) => {
   next.basic.gptmail_verify_ssl = next.basic.gptmail_verify_ssl ?? true
   next.basic.gptmail_domain = typeof next.basic.gptmail_domain === 'string'
     ? next.basic.gptmail_domain
+    : ''
+  next.basic.cfmail_base_url = typeof next.basic.cfmail_base_url === 'string'
+    ? next.basic.cfmail_base_url
+    : ''
+  next.basic.cfmail_api_key = typeof next.basic.cfmail_api_key === 'string'
+    ? next.basic.cfmail_api_key
+    : ''
+  next.basic.cfmail_verify_ssl = next.basic.cfmail_verify_ssl ?? true
+  next.basic.cfmail_domain = typeof next.basic.cfmail_domain === 'string'
+    ? next.basic.cfmail_domain
     : ''
   next.retry = next.retry || {}
   next.retry.auto_refresh_accounts_seconds = Number.isFinite(next.retry.auto_refresh_accounts_seconds)

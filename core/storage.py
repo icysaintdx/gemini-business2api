@@ -73,8 +73,7 @@ def _ensure_backend_initialized() -> None:
 async def has_accounts() -> Optional[bool]:
     backend = _get_backend()
     if backend == "postgres":
-        pool = await _get_pool()
-        async with pool.acquire() as conn:
+        async with _pg_acquire() as conn:
             row = await conn.fetchrow("SELECT 1 FROM accounts LIMIT 1")
         return bool(row)
     if backend == "sqlite":
@@ -92,8 +91,7 @@ def has_accounts_sync() -> Optional[bool]:
 async def has_settings() -> Optional[bool]:
     backend = _get_backend()
     if backend == "postgres":
-        pool = await _get_pool()
-        async with pool.acquire() as conn:
+        async with _pg_acquire() as conn:
             row = await conn.fetchrow(
                 "SELECT 1 FROM kv_settings WHERE key = $1",
                 "settings",
@@ -117,8 +115,7 @@ def has_settings_sync() -> Optional[bool]:
 async def has_stats() -> Optional[bool]:
     backend = _get_backend()
     if backend == "postgres":
-        pool = await _get_pool()
-        async with pool.acquire() as conn:
+        async with _pg_acquire() as conn:
             row = await conn.fetchrow(
                 "SELECT 1 FROM kv_stats WHERE key = $1",
                 "stats",
@@ -201,7 +198,7 @@ async def _get_pool():
             import asyncpg
             _db_pool = await asyncpg.create_pool(
                 db_url,
-                min_size=1,
+                min_size=0,
                 max_size=10,
                 command_timeout=30,
             )
@@ -214,6 +211,36 @@ async def _get_pool():
             logger.error(f"[STORAGE] Database connection failed: {e}")
             raise
     return _db_pool
+
+
+async def _reset_pool():
+    """Close and recreate the connection pool (called on stale connection errors)."""
+    global _db_pool
+    if _db_pool is not None:
+        try:
+            await _db_pool.close()
+        except Exception:
+            pass
+        _db_pool = None
+    return await _get_pool()
+
+
+from contextlib import asynccontextmanager
+
+@asynccontextmanager
+async def _pg_acquire():
+    """Acquire a connection with automatic retry on stale connection errors."""
+    import asyncpg
+    pool = await _get_pool()
+    try:
+        async with pool.acquire() as conn:
+            yield conn
+    except (asyncpg.ConnectionDoesNotExistError,
+            asyncpg.InterfaceError,
+            OSError) as e:
+        logger.warning(f"[STORAGE] Connection lost, resetting pool: {e}")
+        await _reset_pool()
+        raise
 
 
 async def _init_tables(pool) -> None:
@@ -384,8 +411,7 @@ def _parse_account_value(value) -> Optional[dict]:
 async def _load_accounts_from_table() -> Optional[list]:
     backend = _get_backend()
     if backend == "postgres":
-        pool = await _get_pool()
-        async with pool.acquire() as conn:
+        async with _pg_acquire() as conn:
             rows = await conn.fetch(
                 "SELECT data FROM accounts ORDER BY position ASC"
             )
@@ -416,9 +442,8 @@ async def _load_accounts_from_table() -> Optional[list]:
 async def _save_accounts_to_table(accounts: list) -> bool:
     backend = _get_backend()
     if backend == "postgres":
-        pool = await _get_pool()
         normalized = _normalize_accounts(accounts)
-        async with pool.acquire() as conn:
+        async with _pg_acquire() as conn:
             async with conn.transaction():
                 await conn.execute("DELETE FROM accounts")
                 for index, acc in enumerate(normalized, 1):
@@ -487,8 +512,7 @@ async def get_accounts_updated_at() -> Optional[float]:
     backend = _get_backend()
     try:
         if backend == "postgres":
-            pool = await _get_pool()
-            async with pool.acquire() as conn:
+            async with _pg_acquire() as conn:
                 row = await conn.fetchrow(
                     "SELECT EXTRACT(EPOCH FROM MAX(updated_at)) AS ts FROM accounts"
                 )
@@ -537,8 +561,7 @@ def save_accounts_sync(accounts: list) -> bool:
 async def _get_account_data(account_id: str) -> Optional[dict]:
     backend = _get_backend()
     if backend == "postgres":
-        pool = await _get_pool()
-        async with pool.acquire() as conn:
+        async with _pg_acquire() as conn:
             row = await conn.fetchrow(
                 "SELECT data FROM accounts WHERE account_id = $1",
                 account_id,
@@ -562,8 +585,7 @@ async def _update_account_data(account_id: str, data: dict) -> bool:
     backend = _get_backend()
     payload = json.dumps(data, ensure_ascii=False)
     if backend == "postgres":
-        pool = await _get_pool()
-        async with pool.acquire() as conn:
+        async with _pg_acquire() as conn:
             result = await conn.execute(
                 """
                 UPDATE accounts
@@ -621,17 +643,40 @@ async def bulk_update_accounts_cooldown(updates: list[tuple[str, dict]]) -> tupl
 
     backend = _get_backend()
     existing: dict[str, dict] = {}
+    updated = 0
+
     if backend == "postgres":
-        pool = await _get_pool()
-        async with pool.acquire() as conn:
+        async with _pg_acquire() as conn:
+            # SELECT + UPDATE in one connection to avoid contention
             rows = await conn.fetch(
                 "SELECT account_id, data FROM accounts WHERE account_id = ANY($1)",
                 account_ids,
             )
-        for row in rows:
-            data = _parse_account_value(row["data"])
-            if data is not None:
-                existing[row["account_id"]] = data
+            for row in rows:
+                data = _parse_account_value(row["data"])
+                if data is not None:
+                    existing[row["account_id"]] = data
+
+            missing = [aid for aid in account_ids if aid not in existing]
+            if existing:
+                async with conn.transaction():
+                    for account_id, data in existing.items():
+                        cooldown_data = cooldown_map[account_id]
+                        _apply_cooldown_data(data, cooldown_data)
+                        payload = json.dumps(data, ensure_ascii=False)
+                        result = await conn.execute(
+                            """
+                            UPDATE accounts
+                            SET data = $2, updated_at = CURRENT_TIMESTAMP
+                            WHERE account_id = $1
+                            """,
+                            account_id,
+                            payload,
+                        )
+                        if result.startswith("UPDATE") and not result.endswith("0"):
+                            updated += 1
+        return updated, missing if existing else account_ids
+
     elif backend == "sqlite":
         conn = _get_sqlite_conn()
         placeholders = ",".join(["?"] * len(account_ids))
@@ -644,36 +689,11 @@ async def bulk_update_accounts_cooldown(updates: list[tuple[str, dict]]) -> tupl
             data = _parse_account_value(row["data"])
             if data is not None:
                 existing[row["account_id"]] = data
-    else:
-        return 0, account_ids
 
-    missing = [account_id for account_id in account_ids if account_id not in existing]
-    if not existing:
-        return 0, missing
+        missing = [aid for aid in account_ids if aid not in existing]
+        if not existing:
+            return 0, missing
 
-    updated = 0
-    backend = _get_backend()
-    if backend == "postgres":
-        pool = await _get_pool()
-        async with pool.acquire() as conn:
-            async with conn.transaction():
-                for account_id, data in existing.items():
-                    cooldown_data = cooldown_map[account_id]
-                    _apply_cooldown_data(data, cooldown_data)
-                    payload = json.dumps(data, ensure_ascii=False)
-                    result = await conn.execute(
-                        """
-                        UPDATE accounts
-                        SET data = $2, updated_at = CURRENT_TIMESTAMP
-                        WHERE account_id = $1
-                        """,
-                        account_id,
-                        payload,
-                    )
-                    if result.startswith("UPDATE") and not result.endswith("0"):
-                        updated += 1
-    elif backend == "sqlite":
-        conn = _get_sqlite_conn()
         with _sqlite_lock, conn:
             for account_id, data in existing.items():
                 cooldown_data = cooldown_map[account_id]
@@ -689,7 +709,9 @@ async def bulk_update_accounts_cooldown(updates: list[tuple[str, dict]]) -> tupl
                 )
                 if cur.rowcount > 0:
                     updated += 1
-    return updated, missing
+        return updated, missing
+
+    return 0, account_ids
 
 async def bulk_update_accounts_disabled(account_ids: list[str], disabled: bool) -> tuple[int, list[str]]:
     if not account_ids:
@@ -697,8 +719,7 @@ async def bulk_update_accounts_disabled(account_ids: list[str], disabled: bool) 
     backend = _get_backend()
     existing: dict[str, dict] = {}
     if backend == "postgres":
-        pool = await _get_pool()
-        async with pool.acquire() as conn:
+        async with _pg_acquire() as conn:
             rows = await conn.fetch(
                 "SELECT account_id, data FROM accounts WHERE account_id = ANY($1)",
                 account_ids,
@@ -729,8 +750,7 @@ async def bulk_update_accounts_disabled(account_ids: list[str], disabled: bool) 
     updated = 0
     backend = _get_backend()
     if backend == "postgres":
-        pool = await _get_pool()
-        async with pool.acquire() as conn:
+        async with _pg_acquire() as conn:
             async with conn.transaction():
                 for account_id, data in existing.items():
                     data["disabled"] = disabled
@@ -767,8 +787,7 @@ async def bulk_update_accounts_disabled(account_ids: list[str], disabled: bool) 
 async def _renumber_account_positions() -> None:
     backend = _get_backend()
     if backend == "postgres":
-        pool = await _get_pool()
-        async with pool.acquire() as conn:
+        async with _pg_acquire() as conn:
             await conn.execute(
                 """
                 WITH ordered AS (
@@ -801,8 +820,7 @@ async def delete_accounts(account_ids: list[str]) -> int:
     backend = _get_backend()
     deleted = 0
     if backend == "postgres":
-        pool = await _get_pool()
-        async with pool.acquire() as conn:
+        async with _pg_acquire() as conn:
             result = await conn.execute(
                 "DELETE FROM accounts WHERE account_id = ANY($1)",
                 account_ids,
@@ -849,8 +867,7 @@ async def _load_kv(table_name: str, key: str) -> Optional[dict]:
     """加载键值数据"""
     backend = _get_backend()
     if backend == "postgres":
-        pool = await _get_pool()
-        async with pool.acquire() as conn:
+        async with _pg_acquire() as conn:
             row = await conn.fetchrow(
                 f"SELECT value FROM {table_name} WHERE key = $1",
                 key,
@@ -882,8 +899,7 @@ async def _save_kv(table_name: str, key: str, value: dict) -> bool:
     backend = _get_backend()
     payload = json.dumps(value, ensure_ascii=False)
     if backend == "postgres":
-        pool = await _get_pool()
-        async with pool.acquire() as conn:
+        async with _pg_acquire() as conn:
             await conn.execute(
                 f"""
                 INSERT INTO {table_name} (key, value, updated_at)
@@ -986,8 +1002,7 @@ async def save_task_history_entry(entry: dict) -> bool:
     backend = _get_backend()
     try:
         if backend == "postgres":
-            pool = await _get_pool()
-            async with pool.acquire() as conn:
+            async with _pg_acquire() as conn:
                 await conn.execute(
                     """
                     INSERT INTO task_history (id, data, created_at)
@@ -1046,8 +1061,7 @@ async def load_task_history(limit: int = 100) -> Optional[list]:
     backend = _get_backend()
     try:
         if backend == "postgres":
-            pool = await _get_pool()
-            async with pool.acquire() as conn:
+            async with _pg_acquire() as conn:
                 rows = await conn.fetch(
                     """
                     SELECT data FROM task_history
@@ -1085,8 +1099,7 @@ async def clear_task_history() -> int:
     backend = _get_backend()
     try:
         if backend == "postgres":
-            pool = await _get_pool()
-            async with pool.acquire() as conn:
+            async with _pg_acquire() as conn:
                 result = await conn.execute("DELETE FROM task_history")
             if result.startswith("DELETE"):
                 parts = result.split()

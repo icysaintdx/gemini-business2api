@@ -164,6 +164,7 @@ class AccountManager:
         self.conversation_count = 0  # 累计成功次数（用于统计展示）
         self.failure_count = 0  # 累计失败次数（用于统计展示）
         self.session_usage_count = 0  # 本次启动后使用次数（用于均衡轮询）
+        self.disabled_reason: Optional[str] = None  # 自动禁用原因（如 "403 Access Restricted"）
 
     def handle_non_http_error(self, error_context: str = "", request_id: str = "", quota_type: Optional[str] = None) -> None:
         """
@@ -250,14 +251,25 @@ class AccountManager:
             )
             return
 
-        # 401/403认证错误：冷却 text 配额（等效冷却整个账户，但可自动恢复）
-        if status_code in (401, 403):
+        # 403权限错误：Google 返回 403 意味着账户被限制访问，自动禁用
+        # （JWT 刷新或 API 调用返回 403 都是永久性封禁，非临时问题）
+        if status_code == 403:
+            self.config.disabled = True
+            self.disabled_reason = "403 Access Restricted"
+            logger.error(
+                f"[ACCOUNT] [{self.config.account_id}] {req_tag}"
+                f"⛔ 账户遇到 403 权限错误，已自动禁用"
+                f"{': ' + error_detail[:200] if error_detail else ''}"
+            )
+            return
+
+        # 401认证错误：冷却 text 配额（等效冷却整个账户，但可自动恢复）
+        if status_code == 401:
             self.quota_cooldowns["text"] = time.time()
             cooldown_seconds = self.text_rate_limit_cooldown_seconds
-            error_type = HTTP_ERROR_NAMES.get(status_code, f"HTTP {status_code}")
             logger.warning(
                 f"[ACCOUNT] [{self.config.account_id}] {req_tag}"
-                f"遇到{error_type}认证错误，账户将休息{cooldown_seconds}秒后自动恢复"
+                f"遇到认证错误，账户将休息{cooldown_seconds}秒后自动恢复"
                 f"{': ' + error_detail[:100] if error_detail else ''}"
             )
             return

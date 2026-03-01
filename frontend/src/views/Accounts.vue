@@ -540,6 +540,12 @@
               min="1"
               class="w-full rounded-2xl border border-input bg-background px-3 py-2 text-sm"
             />
+            <p class="text-xs text-muted-foreground">
+              注册前请确认邮箱已配置，<a href="https://github.com/Dreamy-rain/gemini-business2api?tab=readme-ov-file#-%E9%82%AE%E7%AE%B1%E6%8F%90%E4%BE%9B%E5%95%86%E9%85%8D%E7%BD%AE" target="_blank" class="text-primary hover:underline font-medium">查看邮箱配置文档</a>
+            </p>
+            <p class="text-xs text-muted-foreground">
+              遇到注册失败、收不到验证码或刷新异常？<a href="https://github.com/Dreamy-rain/gemini-business2api/issues/46" target="_blank" class="text-primary hover:underline font-medium">查看常见问题与解决方案</a>
+            </p>
           </div>
 
           <div v-else class="space-y-4">
@@ -558,7 +564,7 @@
             <textarea
               v-model="importText"
               class="min-h-[140px] w-full rounded-2xl border border-input bg-background px-3 py-2 text-xs font-mono"
-              placeholder="duckmail----you@example.com----password&#10;moemail----you@moemail.app----emailId&#10;freemail----you@freemail.local&#10;gptmail----you@example.com&#10;user@outlook.com----loginPassword----clientId----refreshToken"
+              placeholder="duckmail----you@example.com----password&#10;moemail----you@moemail.app----emailId&#10;freemail----you@freemail.local&#10;gptmail----you@example.com&#10;cfmail----you@example.com----jwtToken&#10;user@outlook.com----loginPassword----clientId----refreshToken"
             ></textarea>
             <div class="rounded-2xl border border-border bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
               <p>支持三种格式：</p>
@@ -566,6 +572,7 @@
               <p class="mt-1 font-mono">moemail----email----emailId</p>
               <p class="mt-1 font-mono">freemail----email</p>
               <p class="mt-1 font-mono">gptmail----email</p>
+              <p class="mt-1 font-mono">cfmail----email----jwtToken</p>
               <p class="mt-1 font-mono">email----password----clientId----refreshToken</p>
               <p class="mt-2">导入后请执行一次"刷新选中"以获取 Cookie。</p>
               <p class="mt-1">注册失败建议关闭无头浏览器再试</p>
@@ -800,7 +807,7 @@
                     <div class="flex items-center justify-between">
                       <div>
                         <p class="text-sm font-medium text-foreground">启用定时刷新</p>
-                        <p class="mt-1 text-xs text-muted-foreground">自动检测并刷新即将过期的账号</p>
+                        <p class="mt-1 text-xs text-muted-foreground">自动检测并分批刷新即将过期的账号</p>
                       </div>
                       <button
                         type="button"
@@ -816,17 +823,51 @@
                     </div>
 
                     <div class="space-y-2">
-                      <label class="block text-xs text-muted-foreground">检测间隔（分钟）</label>
+                      <label class="block text-xs text-muted-foreground">刷新时间</label>
                       <input
-                        v-model.number="scheduledRefreshInterval"
-                        type="number"
-                        min="0"
-                        max="720"
+                        v-model="scheduledRefreshCron"
+                        type="text"
                         class="w-full rounded-2xl border border-input bg-background px-3 py-2 text-sm"
+                        placeholder="08:00,20:00"
                       />
                       <p class="text-xs text-muted-foreground">
-                        范围：0-720 分钟（{{ Math.floor(scheduledRefreshInterval / 60) }} 小时 {{ scheduledRefreshInterval % 60 }} 分钟）
+                        支持两种格式，任选其一：<br>
+                        <b>① 每天定时</b>：填写时间点，如 <code>08:00,20:00</code> 表示每天 8 点和 20 点各刷新一次，多个时间用逗号分隔<br>
+                        <b>② 固定间隔</b>：填写 <code>*/分钟数</code>，如 <code>*/120</code> 表示每隔 2 小时刷新一次
                       </p>
+                    </div>
+
+                    <div class="grid grid-cols-3 gap-3">
+                      <div class="space-y-2">
+                        <label class="block text-xs text-muted-foreground">每批数量</label>
+                        <input
+                          v-model.number="refreshBatchSize"
+                          type="number"
+                          min="1"
+                          max="20"
+                          class="w-full rounded-2xl border border-input bg-background px-3 py-2 text-sm"
+                        />
+                      </div>
+                      <div class="space-y-2">
+                        <label class="block text-xs text-muted-foreground">批次间隔(分)</label>
+                        <input
+                          v-model.number="refreshBatchInterval"
+                          type="number"
+                          min="5"
+                          max="120"
+                          class="w-full rounded-2xl border border-input bg-background px-3 py-2 text-sm"
+                        />
+                      </div>
+                      <div class="space-y-2">
+                        <label class="block text-xs text-muted-foreground">冷却时间(小时)</label>
+                        <input
+                          v-model.number="refreshCooldownHours"
+                          type="number"
+                          min="1"
+                          max="48"
+                          class="w-full rounded-2xl border border-input bg-background px-3 py-2 text-sm"
+                        />
+                      </div>
                     </div>
 
                     <div class="space-y-2">
@@ -846,10 +887,9 @@
                     <div class="rounded-2xl border border-border bg-muted/30 px-4 py-3 text-xs text-muted-foreground">
                       <p class="mb-2 font-medium text-foreground">说明</p>
                       <ul class="list-inside list-disc space-y-1">
-                        <li>定时任务会在后台自动运行，无需手动触发</li>
-                        <li>每次检测会自动刷新即将过期的账号（距离过期 ≤ 过期刷新窗口）</li>
+                        <li>每批刷新指定数量的账号，等当前批完成后再开始下一批</li>
+                        <li>同一账号刷新成功后，在冷却时间内不会被再次选中</li>
                         <li>修改配置后立即生效，无需重启服务</li>
-                        <li>禁用后，定时任务将停止运行</li>
                       </ul>
                     </div>
                   </div>
@@ -1136,6 +1176,14 @@
             <p class="text-xs text-muted-foreground">
               选中导出仅包含当前已勾选账号（{{ selectedCount }} 个）。
             </p>
+            <p class="text-xs text-muted-foreground">
+              <template v-if="exportFormat === 'json'">
+                JSON 格式包含完整数据（Cookie、Token、过期时间等），导入后无需重新刷新。
+              </template>
+              <template v-else>
+                TXT 格式仅导出邮箱和密码，导入后需要重新刷新获取 Cookie。
+              </template>
+            </p>
           </div>
         </div>
         <div class="border-t border-border/60 px-6 py-4">
@@ -1195,7 +1243,8 @@ const toast = useToast()
 const searchQuery = ref('')
 const statusFilter = ref('all')
 const selectedIds = ref<Set<string>>(new Set())
-const viewMode = ref<'table' | 'card'>('table')
+const viewMode = ref<'table' | 'card'>((localStorage.getItem('accounts_view_mode') as 'table' | 'card') || 'table')
+watch(viewMode, (val) => localStorage.setItem('accounts_view_mode', val))
 const currentPage = ref(1)
 const pageSize = ref(50)
 const isEditOpen = ref(false)
@@ -1224,7 +1273,10 @@ const moreActionsRef = ref<HTMLDivElement | null>(null)
 const lastRegisterTaskId = ref<string | null>(null)
 const lastLoginTaskId = ref<string | null>(null)
 const scheduledRefreshEnabled = ref(false)
-const scheduledRefreshInterval = ref(30)
+const scheduledRefreshCron = ref('08:00,20:00')
+const refreshBatchSize = ref(5)
+const refreshBatchInterval = ref(30)
+const refreshCooldownHours = ref(12)
 const refreshWindowHours = ref(24)
 const isLoadingScheduledConfig = ref(false)
 const isSavingScheduledConfig = ref(false)
@@ -1279,6 +1331,7 @@ const statusOptions = [
   { label: '即将过期', value: '即将过期' },
   { label: '已过期', value: '已过期' },
   { label: '手动禁用', value: '手动禁用' },
+  { label: '403 禁用', value: '403 禁用' },
   { label: '429限流', value: '429限流' },
 ]
 
@@ -1751,6 +1804,26 @@ const parseImportLines = (raw: string) => {
       return
     }
 
+    if (parts[0].toLowerCase() === 'cfmail') {
+      if (parts.length < 2 || !parts[1]) {
+        errors.push(`第 ${lineNo} 行格式错误（cfmail）`)
+        return
+      }
+      const email = parts[1]
+      const jwt = parts[2] || ''
+      items.push({
+        id: email,
+        secure_c_ses: '',
+        csesidx: '',
+        config_id: '',
+        expires_at: IMPORT_EXPIRES_AT,
+        mail_provider: 'cfmail',
+        mail_address: email,
+        mail_password: jwt,
+      })
+      return
+    }
+
     if (parts.length >= 4 && parts[0] && parts[2] && parts[3]) {
       const email = parts[0]
       const password = parts[1] || ''
@@ -1816,7 +1889,23 @@ const handleImportFile = async (event: Event) => {
       await accountsStore.updateConfig(next)
       selectedIds.value = new Set(importedIds)
       toast.success(`导入 ${importList.length} 条账号配置`)
-      closeRegisterModal()
+
+      // Check if imported accounts need refresh (no valid cookies)
+      const needRefresh = importList.some((item: any) => !item.secure_c_ses)
+      if (needRefresh && importedIds.length > 0) {
+        closeRegisterModal()
+        const confirmed = await confirmDialog.ask({
+          title: '导入成功',
+          message: `已导入 ${importedIds.length} 个账户。检测到部分账户缺少 Cookie，是否立即刷新？`,
+          confirmText: '立即刷新',
+          cancelText: '稍后手动刷新',
+        })
+        if (confirmed) {
+          await handleRefreshSelected()
+        }
+      } else {
+        closeRegisterModal()
+      }
       return
     }
 
@@ -1937,6 +2026,9 @@ const exportConfig = async (format: 'json' | 'txt', scope: 'all' | 'selected' = 
       }
       if (provider === 'gptmail') {
         return `gptmail----${email}`
+      }
+      if (provider === 'cfmail') {
+        return `cfmail----${email}----${item.mail_password || ''}`
       }
       if (provider === 'duckmail') {
         return `duckmail----${email}----${item.mail_password || ''}`
@@ -2066,7 +2158,10 @@ const loadScheduledConfig = async () => {
     const settings = await settingsApi.get()
     cachedSettings.value = settings  // 缓存配置
     scheduledRefreshEnabled.value = settings.retry.scheduled_refresh_enabled ?? false
-    scheduledRefreshInterval.value = settings.retry.scheduled_refresh_interval_minutes ?? 30
+    scheduledRefreshCron.value = settings.retry.scheduled_refresh_cron ?? '08:00,20:00'
+    refreshBatchSize.value = settings.retry.refresh_batch_size ?? 5
+    refreshBatchInterval.value = settings.retry.refresh_batch_interval_minutes ?? 30
+    refreshCooldownHours.value = settings.retry.refresh_cooldown_hours ?? 12
     refreshWindowHours.value = settings.basic.refresh_window_hours ?? 24
   } catch (error: any) {
     toast.error(error?.message || '加载定时任务配置失败')
@@ -2076,13 +2171,19 @@ const loadScheduledConfig = async () => {
 }
 
 const saveScheduledConfig = async () => {
-  // 验证检测间隔
-  if (isNaN(scheduledRefreshInterval.value) || !Number.isInteger(scheduledRefreshInterval.value)) {
-    toast.error('检测间隔必须是有效的整数')
+  // 验证每批数量
+  if (isNaN(refreshBatchSize.value) || refreshBatchSize.value < 1 || refreshBatchSize.value > 20) {
+    toast.error('每批数量必须在 1-20 之间')
     return
   }
-  if (scheduledRefreshInterval.value < 0 || scheduledRefreshInterval.value > 720) {
-    toast.error('检测间隔必须在 0-720 分钟之间（0-12 小时）')
+  // 验证批次间隔
+  if (isNaN(refreshBatchInterval.value) || refreshBatchInterval.value < 5 || refreshBatchInterval.value > 120) {
+    toast.error('批次间隔必须在 5-120 分钟之间')
+    return
+  }
+  // 验证冷却时间
+  if (isNaN(refreshCooldownHours.value) || refreshCooldownHours.value < 1 || refreshCooldownHours.value > 48) {
+    toast.error('冷却时间必须在 1-48 小时之间')
     return
   }
 
@@ -2101,7 +2202,10 @@ const saveScheduledConfig = async () => {
     // 使用缓存的配置，避免重复API调用
     const settings = cachedSettings.value || await settingsApi.get()
     settings.retry.scheduled_refresh_enabled = scheduledRefreshEnabled.value
-    settings.retry.scheduled_refresh_interval_minutes = scheduledRefreshInterval.value
+    settings.retry.scheduled_refresh_cron = scheduledRefreshCron.value
+    settings.retry.refresh_batch_size = refreshBatchSize.value
+    settings.retry.refresh_batch_interval_minutes = refreshBatchInterval.value
+    settings.retry.refresh_cooldown_hours = refreshCooldownHours.value
     settings.basic.refresh_window_hours = refreshWindowHours.value
     await settingsApi.update(settings)
     cachedSettings.value = settings  // 更新缓存
@@ -2269,6 +2373,9 @@ const statusLabel = (account: AdminAccount) => {
     return '429限流'
   }
   if (account.disabled) {
+    if (account.disabled_reason?.includes('403')) {
+      return '403 禁用'
+    }
     return '手动禁用'
   }
   if (account.status === '已过期') {
@@ -2293,6 +2400,9 @@ const statusClass = (account: AdminAccount) => {
   }
   if (status === '手动禁用') {
     return 'bg-muted text-muted-foreground'
+  }
+  if (status === '403 禁用') {
+    return 'bg-rose-600 text-white'
   }
   return 'bg-emerald-500 text-white'
 }
@@ -2326,7 +2436,7 @@ const trialBadgeClass = (days: number | null | undefined) => {
 
 const rowClass = (account: AdminAccount) => {
   const status = statusLabel(account)
-  if (status === '手动禁用' || status === '已过期') {
+  if (status === '手动禁用' || status === '已过期' || status === '403 禁用') {
     return 'bg-muted/70'
   }
   return ''
