@@ -16,7 +16,7 @@ from core.base_task_service import TaskCancelledError
 
 
 # 常量
-AUTH_HOME_URL = "https://auth.business.gemini.google/login"
+AUTH_HOME_URL = "https://auth.business.gemini.google/login?continueUrl=https%3A%2F%2Fbusiness.gemini.google%2F"
 
 # Linux 下常见的 Chromium 路径
 CHROMIUM_PATHS = [
@@ -129,11 +129,19 @@ class GeminiAutomation:
         if chromium_path:
             options.set_browser_path(chromium_path)
 
-        options.set_argument("--incognito")
+        # 容器环境检测：如果有 Xvfb (DISPLAY 已设置)，强制使用 normal 模式
+        # 避免不必要地使用 headless（headless 更容易被 Google 检测）
+        if self.browser_mode == BROWSER_MODE_HEADLESS and os.environ.get("DISPLAY"):
+            self._log("info", "🖥️ 检测到 Xvfb 虚拟显示器，切换为 normal 模式")
+            self.browser_mode = BROWSER_MODE_NORMAL
+            self.headless = False
+
+        # 基础参数（不使用 --incognito，与 zhuce.py 保持一致）
         options.set_argument("--no-sandbox")
         options.set_argument("--disable-dev-shm-usage")
         options.set_argument("--disable-setuid-sandbox")
         options.set_argument("--disable-blink-features=AutomationControlled")
+        options.set_argument("--disable-infobars")
 
         # 随机窗口尺寸（避免固定分辨率成为指纹）
         vw, vh = random.choice(COMMON_VIEWPORTS)
@@ -157,12 +165,12 @@ class GeminiAutomation:
         if self.browser_mode == BROWSER_MODE_HEADLESS:
             # 使用新版无头模式，更接近真实浏览器
             options.set_argument("--headless=new")
-            options.set_argument("--disable-gpu")
             options.set_argument("--no-first-run")
             options.set_argument("--disable-extensions")
-            # 反检测参数
-            options.set_argument("--disable-infobars")
             options.set_argument("--enable-features=NetworkService,NetworkServiceInProcess")
+            # 避免 SwiftShader 渲染器暴露 headless 特征
+            options.set_argument("--use-gl=angle")
+            options.set_argument("--use-angle=swiftshader-webgl")
         elif self.browser_mode == BROWSER_MODE_SILENT:
             # 静默模式：有头运行，但尽量最小化，减少抢占焦点
             options.set_argument("--start-minimized")
@@ -175,14 +183,45 @@ class GeminiAutomation:
         if self.browser_mode == BROWSER_MODE_SILENT:
             self._minimize_window(page)
 
-        # 最小化 JS 注入：只设置 window.chrome（不使用 Object.defineProperty，避免被 reCAPTCHA 检测）
-        # 注意：DrissionPage 不像 Selenium 那样暴露 navigator.webdriver，无需额外隐藏
+        # 反自动化检测 JS 注入（参考 undetected_chromedriver 的策略）
         try:
             page.run_cdp("Page.addScriptToEvaluateOnNewDocument", source="""
-                // 确保 window.chrome 存在（headless 模式下可能缺失）
+                // 1. 隐藏 navigator.webdriver 标识
+                Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+
+                // 2. 确保 window.chrome 存在且结构正确
                 if (!window.chrome) {
                     window.chrome = {runtime: {}, loadTimes: function(){return {}}, csi: function(){return {}}};
                 }
+                if (!window.chrome.runtime) {
+                    window.chrome.runtime = {};
+                }
+
+                // 3. 模拟真实的 plugins 和 mimeTypes（防止空数组检测）
+                Object.defineProperty(navigator, 'plugins', {
+                    get: () => {
+                        const arr = [
+                            {name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer', description: 'Portable Document Format'},
+                            {name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai', description: ''},
+                            {name: 'Native Client', filename: 'internal-nacl-plugin', description: ''}
+                        ];
+                        arr.item = (i) => arr[i];
+                        arr.namedItem = (n) => arr.find(p => p.name === n);
+                        arr.refresh = () => {};
+                        return arr;
+                    }
+                });
+
+                // 4. 设置正确的语言属性
+                Object.defineProperty(navigator, 'languages', {get: () => ['zh-CN', 'zh', 'en']});
+
+                // 5. 隐藏自动化相关的 permission 检测
+                const originalQuery = window.navigator.permissions.query;
+                window.navigator.permissions.query = (parameters) => (
+                    parameters.name === 'notifications' ?
+                        Promise.resolve({state: Notification.permission}) :
+                        originalQuery(parameters)
+                );
             """)
         except Exception:
             pass
@@ -238,29 +277,13 @@ class GeminiAutomation:
         from datetime import datetime
         task_start_time = datetime.now()
 
-        # Step 1: 导航到登录页面
+        # Step 1: 导航到登录页面（参照 zhuce.py，使用带 continueUrl 的完整 URL）
         self._log("info", f"🌐 打开登录页面: {email}")
         page.get(AUTH_HOME_URL, timeout=self.timeout)
         time.sleep(random.uniform(2, 4))
 
-        # 从页面动态提取 XSRF token（避免硬编码被 Google 标黑）
-        xsrf_token = self._extract_xsrf_token(page)
-
-        # 设置 XSRF Cookie
-        try:
-            self._log("info", "🍪 设置 XSRF Cookie...")
-            page.set.cookies({
-                "name": "__Host-AP_SignInXsrf",
-                "value": xsrf_token,
-                "url": AUTH_HOME_URL,
-                "path": "/",
-                "secure": True,
-            })
-        except Exception as e:
-            self._log("warning", f"⚠️ Cookie 设置失败: {e}")
-
-        # Step 1.5: 提交邮箱（优先表单方式，URL 方式备用）
-        # 先启动网络监听，再提交（避免漏掉请求）
+        # Step 1.5: 表单方式提交邮箱（参照 zhuce.py 的方式，不操作 XSRF）
+        # 先启动网络监听
         try:
             page.listen.start(
                 targets=["batchexecute"],
@@ -271,38 +294,52 @@ class GeminiAutomation:
         except Exception:
             pass
 
+        # 填写邮箱并点击登录按钮（与 zhuce.py 保持一致的简洁流程）
         form_login_ok = False
-        # 方法1: 表单方式（填写邮箱输入框 + 点击登录按钮）
         try:
+            # 使用多种选择器查找邮箱输入框（CSS + XPath 兜底）
             email_input = page.ele("css:input[name='loginHint']", timeout=5)
+            if not email_input:
+                # zhuce.py 使用的 XPath
+                email_input = page.ele("xpath:/html/body/c-wiz/div/div/div[1]/div/div/div/form/div[1]/div[1]/div/span[2]/input", timeout=3)
             if email_input:
-                self._log("info", "📧 使用表单方式提交邮箱...")
+                self._log("info", "📧 填写邮箱...")
                 email_input.click()
-                time.sleep(random.uniform(0.3, 0.6))
+                time.sleep(random.uniform(0.2, 0.5))
                 email_input.clear()
                 time.sleep(random.uniform(0.1, 0.3))
                 if not self._simulate_human_input(email_input, email):
                     email_input.input(email, clear=True)
-                time.sleep(random.uniform(0.5, 1.0))
+                time.sleep(random.uniform(0.3, 0.8))
 
-                # 点击登录按钮（实际页面 id="log-in-button"，文字"使用邮箱继续"）
-                login_btn = page.ele("#log-in-button", timeout=3) or \
-                            page.ele("#sign-in-with-email", timeout=2)
+                # 查找并点击登录按钮
+                login_btn = (
+                    page.ele("#log-in-button", timeout=3) or
+                    page.ele("#sign-in-with-email", timeout=2) or
+                    page.ele("xpath:/html/body/c-wiz/div/div/div[1]/div/div/div/form/div[2]/div/button", timeout=2)
+                )
                 if login_btn:
-                    self._human_click(page, login_btn)
+                    # 用 JS 点击（与 zhuce.py 一致: driver.execute_script("arguments[0].click();", btn)）
+                    try:
+                        page.run_js("arguments[0].click();", login_btn)
+                    except Exception:
+                        self._human_click(page, login_btn)
                     self._log("info", "✅ 已点击登录按钮")
                     form_login_ok = True
                 else:
-                    # 回车提交兜底
+                    # 回车兜底
                     email_input.input("\n")
                     self._log("info", "⏎ 回车提交邮箱")
                     form_login_ok = True
                 time.sleep(random.uniform(3, 5))
+            else:
+                self._log("warning", "⚠️ 未找到邮箱输入框")
         except Exception as e:
             self._log("warning", f"⚠️ 表单登录异常: {e}")
 
-        # 方法2: URL 方式（备用，当表单方式失败时使用）
+        # 备用: URL 方式（仅当表单完全失败时）
         if not form_login_ok:
+            xsrf_token = self._extract_xsrf_token(page)
             login_hint = quote(email, safe="")
             login_url = f"https://auth.business.gemini.google/login/email?continueUrl=https%3A%2F%2Fbusiness.gemini.google%2F&loginHint={login_hint}&xsrfToken={xsrf_token}"
             self._log("info", "📧 使用 URL 方式提交邮箱（备用）...")
@@ -333,9 +370,16 @@ class GeminiAutomation:
                     if not self._simulate_human_input(email_input, email):
                         email_input.input(email, clear=True)
                     time.sleep(random.uniform(0.5, 1.0))
-                    login_btn = page.ele("#log-in-button", timeout=3) or page.ele("#sign-in-with-email", timeout=2)
+                    login_btn = (
+                        page.ele("#log-in-button", timeout=3) or
+                        page.ele("#sign-in-with-email", timeout=2) or
+                        page.ele("xpath:/html/body/c-wiz/div/div/div[1]/div/div/div/form/div[2]/div/button", timeout=2)
+                    )
                     if login_btn:
-                        self._human_click(page, login_btn)
+                        try:
+                            page.run_js("arguments[0].click();", login_btn)
+                        except Exception:
+                            self._human_click(page, login_btn)
                         self._log("info", "✅ 表单方式重新提交邮箱")
                         time.sleep(random.uniform(3, 5))
                         current_url = page.url
