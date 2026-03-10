@@ -479,6 +479,22 @@ logger.info(f"[PROXY] Account operations (register/login/refresh): {PROXY_FOR_AU
 logger.info(f"[PROXY] Chat operations (JWT/session/messages): {PROXY_FOR_CHAT if PROXY_FOR_CHAT else 'disabled'}")
 
 # ---------- 工具函数 ----------
+def _parse_bool(value, default: bool) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    if isinstance(value, (int, float)):
+        return value != 0
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in ("1", "true", "yes", "y", "on"):
+            return True
+        if lowered in ("0", "false", "no", "n", "off"):
+            return False
+    return default
+
+
 def get_base_url(request: Request) -> str:
     """获取完整的base URL（优先环境变量，否则从请求自动获取）"""
     # 优先使用环境变量
@@ -755,6 +771,14 @@ async def auto_refresh_accounts_task():
                     SESSION_CACHE_TTL_SECONDS,
                     global_stats
                 )
+
+                # Fix inconsistent state: accounts that are no longer expired/disabled
+                # and have no quota cooldowns should be marked available
+                for acc_id, acc_mgr in multi_account_mgr.accounts.items():
+                    if not acc_mgr.config.is_expired() and not acc_mgr.config.disabled and not acc_mgr.is_available:
+                        if not acc_mgr.quota_cooldowns:
+                            acc_mgr.is_available = True
+                            logger.info(f"[AUTO-REFRESH] 账号 {acc_id} 状态已修正为可用")
 
                 _last_known_accounts_version = db_version
                 logger.info(f"[AUTO-REFRESH] 账号刷新完成，当前账号数: {len(multi_account_mgr.accounts)}")
@@ -1665,6 +1689,7 @@ async def admin_get_settings(request: Request):
             "cfmail_verify_ssl": config.basic.cfmail_verify_ssl,
             "cfmail_domain": config.basic.cfmail_domain,
             "browser_engine": config.basic.browser_engine,
+            "browser_mode": config.basic.browser_mode,
             "browser_headless": config.basic.browser_headless,
             "refresh_window_hours": config.basic.refresh_window_hours,
             "register_default_count": config.basic.register_default_count,
@@ -1687,11 +1712,9 @@ async def admin_get_settings(request: Request):
             "session_cache_ttl_seconds": config.retry.session_cache_ttl_seconds,
             "auto_refresh_accounts_seconds": config.retry.auto_refresh_accounts_seconds,
             "scheduled_refresh_enabled": config.retry.scheduled_refresh_enabled,
-            "scheduled_refresh_interval_minutes": config.retry.scheduled_refresh_interval_minutes,
             "scheduled_refresh_cron": config.retry.scheduled_refresh_cron,
-            "refresh_batch_size": config.retry.refresh_batch_size,
-            "refresh_batch_interval_minutes": config.retry.refresh_batch_interval_minutes,
             "refresh_cooldown_hours": config.retry.refresh_cooldown_hours,
+            "verification_code_resend_count": config.retry.verification_code_resend_count,
         },
         "quota_limits": {
             "enabled": config.quota_limits.enabled,
@@ -1742,6 +1765,7 @@ async def admin_update_settings(request: Request, new_settings: dict = Body(...)
         basic.setdefault("cfmail_verify_ssl", config.basic.cfmail_verify_ssl)
         basic.setdefault("cfmail_domain", config.basic.cfmail_domain)
         basic.setdefault("browser_engine", config.basic.browser_engine)
+        basic.setdefault("browser_mode", config.basic.browser_mode)
         basic.setdefault("browser_headless", config.basic.browser_headless)
         basic.setdefault("refresh_window_hours", config.basic.refresh_window_hours)
         basic.setdefault("register_default_count", config.basic.register_default_count)
@@ -1749,6 +1773,17 @@ async def admin_update_settings(request: Request, new_settings: dict = Body(...)
         basic.setdefault("image_expire_hours", config.basic.image_expire_hours)
         if not isinstance(basic.get("register_domain"), str):
             basic["register_domain"] = ""
+        browser_mode_raw = basic.get("browser_mode")
+        if browser_mode_raw is not None and str(browser_mode_raw).strip():
+            browser_mode = str(browser_mode_raw).strip().lower()
+            if browser_mode not in ("normal", "silent", "headless"):
+                raise HTTPException(status_code=400, detail="browser_mode 必须是 normal / silent / headless")
+        else:
+            browser_headless = _parse_bool(basic.get("browser_headless"), config.basic.browser_headless)
+            browser_mode = "headless" if browser_headless else "normal"
+        basic["browser_mode"] = browser_mode
+        basic["browser_headless"] = browser_mode == "headless"
+
         basic.pop("duckmail_proxy", None)
         new_settings["basic"] = basic
 
@@ -1767,12 +1802,16 @@ async def admin_update_settings(request: Request, new_settings: dict = Body(...)
         new_settings["video_generation"] = video_generation
 
         retry = dict(new_settings.get("retry") or {})
+        # 已弃用：分批刷新字段不再对外暴露，也不再参与保存
+        retry.pop("refresh_batch_size", None)
+        retry.pop("refresh_batch_interval_minutes", None)
         retry.setdefault("auto_refresh_accounts_seconds", config.retry.auto_refresh_accounts_seconds)
         retry.setdefault("scheduled_refresh_enabled", config.retry.scheduled_refresh_enabled)
         retry.setdefault("scheduled_refresh_interval_minutes", config.retry.scheduled_refresh_interval_minutes)
         retry.setdefault("text_rate_limit_cooldown_seconds", config.retry.text_rate_limit_cooldown_seconds)
         retry.setdefault("images_rate_limit_cooldown_seconds", config.retry.images_rate_limit_cooldown_seconds)
         retry.setdefault("videos_rate_limit_cooldown_seconds", config.retry.videos_rate_limit_cooldown_seconds)
+        retry.setdefault("verification_code_resend_count", config.retry.verification_code_resend_count)
         new_settings["retry"] = retry
 
         # 配额上限配置

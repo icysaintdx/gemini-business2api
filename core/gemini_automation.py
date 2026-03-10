@@ -42,6 +42,10 @@ COMMON_VIEWPORTS = [
     (1920, 1080), (1600, 900), (1280, 800), (1360, 768),
 ]
 
+BROWSER_MODE_NORMAL = "normal"
+BROWSER_MODE_SILENT = "silent"
+BROWSER_MODE_HEADLESS = "headless"
+
 
 def _find_chromium_path() -> Optional[str]:
     """查找可用的 Chromium/Chrome 浏览器路径"""
@@ -49,6 +53,13 @@ def _find_chromium_path() -> Optional[str]:
         if os.path.isfile(path) and os.access(path, os.X_OK):
             return path
     return None
+
+
+def _normalize_browser_mode(mode: str, default: str = BROWSER_MODE_NORMAL) -> str:
+    value = (mode or "").strip().lower()
+    if value in (BROWSER_MODE_NORMAL, BROWSER_MODE_SILENT, BROWSER_MODE_HEADLESS):
+        return value
+    return default
 
 
 class GeminiAutomation:
@@ -59,19 +70,21 @@ class GeminiAutomation:
         user_agent: str = "",
         proxy: str = "",
         headless: bool = True,
+        browser_mode: str = "",
         timeout: int = 60,
         log_callback=None,
-        profile_dir: Optional[str] = None,
     ) -> None:
         self.user_agent = user_agent or self._get_ua()
         self.proxy = proxy
-        self.headless = headless
+        default_mode = BROWSER_MODE_HEADLESS if headless else BROWSER_MODE_NORMAL
+        self.browser_mode = _normalize_browser_mode(browser_mode, default_mode)
+        self.headless = self.browser_mode == BROWSER_MODE_HEADLESS
         self.timeout = timeout
         self.log_callback = log_callback
-        self.profile_dir = profile_dir  # 持久化浏览器配置目录（不为空时保留数据）
         self._page = None
         self._user_data_dir = None
         self._last_send_error = ""
+        self._last_send_confidence = "unknown"
 
     def stop(self) -> None:
         """外部请求停止：尽力关闭浏览器实例。"""
@@ -104,9 +117,7 @@ class GeminiAutomation:
                 except Exception:
                     pass
             self._page = None
-            # 只有非持久化模式才清理用户数据
-            if not self.profile_dir:
-                self._cleanup_user_data(user_data_dir)
+            self._cleanup_user_data(user_data_dir)
             self._user_data_dir = None
 
     def _create_page(self) -> ChromiumPage:
@@ -118,7 +129,7 @@ class GeminiAutomation:
         if chromium_path:
             options.set_browser_path(chromium_path)
 
-        # 不使用 --incognito：Google 能检测隐私模式，真实用户不会每次都开
+        options.set_argument("--incognito")
         options.set_argument("--no-sandbox")
         options.set_argument("--disable-dev-shm-usage")
         options.set_argument("--disable-setuid-sandbox")
@@ -143,7 +154,7 @@ class GeminiAutomation:
         if self.proxy:
             options.set_argument(f"--proxy-server={self.proxy}")
 
-        if self.headless:
+        if self.browser_mode == BROWSER_MODE_HEADLESS:
             # 使用新版无头模式，更接近真实浏览器
             options.set_argument("--headless=new")
             options.set_argument("--disable-gpu")
@@ -152,157 +163,51 @@ class GeminiAutomation:
             # 反检测参数
             options.set_argument("--disable-infobars")
             options.set_argument("--enable-features=NetworkService,NetworkServiceInProcess")
+        elif self.browser_mode == BROWSER_MODE_SILENT:
+            # 静默模式：有头运行，但尽量最小化，减少抢占焦点
+            options.set_argument("--start-minimized")
 
-        # 持久化浏览器配置：使用固定的 user-data-dir 保留 cookie/历史记录
-        if self.profile_dir:
-            os.makedirs(self.profile_dir, exist_ok=True)
-            options.set_user_data_path(self.profile_dir)
-            self._log("info", f"📁 使用持久化浏览器配置: {self.profile_dir}")
+
 
         options.auto_port()
         page = ChromiumPage(options)
         page.set.timeouts(self.timeout)
+        if self.browser_mode == BROWSER_MODE_SILENT:
+            self._minimize_window(page)
 
-        # 反检测：始终注入（不限 headless），DrissionPage 在任何模式下都可能暴露自动化特征
+        # 最小化 JS 注入：只设置 window.chrome（不使用 Object.defineProperty，避免被 reCAPTCHA 检测）
+        # 注意：DrissionPage 不像 Selenium 那样暴露 navigator.webdriver，无需额外隐藏
         try:
             page.run_cdp("Page.addScriptToEvaluateOnNewDocument", source="""
-                // 隐藏 webdriver 标志
-                Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
-
-                // 伪造 plugins（返回真实 PluginArray 结构而非数字数组）
-                Object.defineProperty(navigator, 'plugins', {
-                    get: () => {
-                        const arr = [{
-                            name: 'Chrome PDF Plugin',
-                            description: 'Portable Document Format',
-                            filename: 'internal-pdf-viewer',
-                            length: 1,
-                            0: {type: 'application/x-google-chrome-pdf', suffixes: 'pdf', description: 'Portable Document Format'}
-                        }, {
-                            name: 'Chrome PDF Viewer',
-                            description: '',
-                            filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai',
-                            length: 1,
-                            0: {type: 'application/pdf', suffixes: 'pdf', description: ''}
-                        }, {
-                            name: 'Native Client',
-                            description: '',
-                            filename: 'internal-nacl-plugin',
-                            length: 2,
-                            0: {type: 'application/x-nacl', suffixes: '', description: 'Native Client Executable'},
-                            1: {type: 'application/x-pnacl', suffixes: '', description: 'Portable Native Client Executable'}
-                        }];
-                        arr.item = i => arr[i] || null;
-                        arr.namedItem = n => arr.find(p => p.name === n) || null;
-                        arr.refresh = () => {};
-                        return arr;
-                    }
-                });
-
-                Object.defineProperty(navigator, 'languages', {get: () => ['zh-CN', 'zh', 'en']});
-                window.chrome = {runtime: {}, loadTimes: () => ({}), csi: () => ({})};
-
-                // 硬件与平台信息
-                Object.defineProperty(navigator, 'maxTouchPoints', {get: () => 0});
-                Object.defineProperty(navigator, 'platform', {get: () => 'Win32'});
-                Object.defineProperty(navigator, 'vendor', {get: () => 'Google Inc.'});
-                Object.defineProperty(navigator, 'hardwareConcurrency', {get: () => 8});
-                Object.defineProperty(navigator, 'deviceMemory', {get: () => 8});
-
-                // permissions 伪造
-                const originalQuery = window.navigator.permissions.query;
-                window.navigator.permissions.query = (parameters) => (
-                    parameters.name === 'notifications' ?
-                        Promise.resolve({state: Notification.permission}) :
-                        originalQuery(parameters)
-                );
-
-                // Canvas 指纹噪声（在 toDataURL/toBlob 时注入微小噪声）
-                const origToDataURL = HTMLCanvasElement.prototype.toDataURL;
-                HTMLCanvasElement.prototype.toDataURL = function(type) {
-                    const ctx = this.getContext('2d');
-                    if (ctx) {
-                        const imgData = ctx.getImageData(0, 0, this.width, this.height);
-                        for (let i = 0; i < imgData.data.length; i += 4) {
-                            imgData.data[i] = imgData.data[i] + (Math.random() * 2 - 1) | 0;  // R
-                        }
-                        ctx.putImageData(imgData, 0, 0);
-                    }
-                    return origToDataURL.apply(this, arguments);
-                };
-
-                // WebGL 指纹伪造
-                const getParam = WebGLRenderingContext.prototype.getParameter;
-                WebGLRenderingContext.prototype.getParameter = function(param) {
-                    if (param === 37445) return 'Google Inc. (NVIDIA)';  // UNMASKED_VENDOR_WEBGL
-                    if (param === 37446) return 'ANGLE (NVIDIA, NVIDIA GeForce GTX 1060, OpenGL 4.5)';  // UNMASKED_RENDERER_WEBGL
-                    return getParam.apply(this, arguments);
-                };
-
-                // WebRTC IP 泄露防护（JS 层）
-                if (typeof RTCPeerConnection !== 'undefined') {
-                    const origRTC = RTCPeerConnection;
-                    window.RTCPeerConnection = function(...args) {
-                        if (args[0] && args[0].iceServers) {
-                            args[0].iceServers = [];
-                        }
-                        return new origRTC(...args);
-                    };
-                    window.RTCPeerConnection.prototype = origRTC.prototype;
-                }
-
-                // navigator.connection 伪造（模拟 WiFi 宽带用户）
-                if (!navigator.connection) {
-                    Object.defineProperty(navigator, 'connection', {
-                        get: () => ({
-                            effectiveType: '4g',
-                            rtt: 50,
-                            downlink: 10,
-                            saveData: false,
-                            type: 'wifi',
-                            addEventListener: () => {},
-                            removeEventListener: () => {},
-                        })
-                    });
-                }
-
-                // Battery API 伪造（防止电池指纹）
-                if (navigator.getBattery) {
-                    navigator.getBattery = () => Promise.resolve({
-                        charging: true,
-                        chargingTime: 0,
-                        dischargingTime: Infinity,
-                        level: 1.0,
-                        addEventListener: () => {},
-                        removeEventListener: () => {},
-                    });
+                // 确保 window.chrome 存在（headless 模式下可能缺失）
+                if (!window.chrome) {
+                    window.chrome = {runtime: {}, loadTimes: function(){return {}}, csi: function(){return {}}};
                 }
             """)
         except Exception:
             pass
 
-        # 设置 Accept-Language HTTP 请求头（与浏览器语言设置保持一致）
-        try:
-            page.run_cdp("Network.setExtraHTTPHeaders", headers={
-                "Accept-Language": "zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7"
-            })
-        except Exception:
-            pass
-
-        # WebRTC IP 泄露防护（CDP 层）
-        try:
-            page.run_cdp("WebRTC.enable")
-        except Exception:
-            pass
-
         return page
+
+    def _minimize_window(self, page) -> None:
+        """尽力最小化窗口，减少对本地操作的干扰。"""
+        try:
+            info = page.run_cdp("Browser.getWindowForTarget")
+            if isinstance(info, dict) and info.get("windowId") is not None:
+                page.run_cdp(
+                    "Browser.setWindowBounds",
+                    windowId=info["windowId"],
+                    bounds={"windowState": "minimized"},
+                )
+        except Exception:
+            pass
 
     def _extract_xsrf_token(self, page) -> str:
         """从页面中提取真实的 XSRF Token（避免硬编码被标黑）"""
         try:
             html = page.html or ""
             # 尝试从 meta 标签提取
-            m = re.search(r'name=["\']xsrf-token["\']\s+content=["\']([^"\']+-)["\']', html, re.IGNORECASE)
+            m = re.search(r'name=["\']xsrf-token["\']\s+content=["\']([^"\']+)["\']', html, re.IGNORECASE)
             if m:
                 self._log("info", "🔑 从 meta 标签提取到 XSRF token")
                 return m.group(1)
@@ -357,11 +262,8 @@ class GeminiAutomation:
         # Step 1.5: 通过 URL 方式提交邮箱（稳定，不触发风控）
         login_hint = quote(email, safe="")
         login_url = f"https://auth.business.gemini.google/login/email?continueUrl=https%3A%2F%2Fbusiness.gemini.google%2F&loginHint={login_hint}&xsrfToken={xsrf_token}"
-        self._log("info", "📧 使用 URL 方式提交邮箱...")
-        page.get(login_url, timeout=self.timeout)
-        time.sleep(random.uniform(3, 5))
 
-        # 启动网络监听（只监听 batchexecute，减少干扰）
+        # 先启动网络监听，再导航（避免漏掉页面加载期间的请求）
         try:
             page.listen.start(
                 targets=["batchexecute"],
@@ -371,6 +273,10 @@ class GeminiAutomation:
             )
         except Exception:
             pass
+
+        self._log("info", "📧 使用 URL 方式提交邮箱...")
+        page.get(login_url, timeout=self.timeout)
+        time.sleep(random.uniform(3, 5))
 
         # 模拟真实用户行为：页面加载后随机滚动
         self._random_scroll(page)
@@ -396,10 +302,10 @@ class GeminiAutomation:
         if access_error:
             return access_error
 
-        # Step 3: 点击发送验证码按钮（最多3轮，指数退避间隔）
+        # Step 3: 点击发送验证码按钮（最多5轮，适度退避间隔）
         self._log("info", "📧 发送验证码...")
-        max_send_rounds = 3
-        send_round_delays = [15, 30, 60]
+        max_send_rounds = 5
+        send_round_delays = [10, 10, 15, 15, 20]
         send_round = 0
         while True:
             send_round += 1
@@ -422,24 +328,39 @@ class GeminiAutomation:
 
         # Step 5: 轮询邮件获取验证码（3次，每次5秒间隔）
         self._log("info", "📬 等待邮箱验证码...")
-        code = mail_client.poll_for_code(timeout=15, interval=5, since_time=task_start_time)
+        poll_since_time = task_start_time - timedelta(seconds=30)
+        first_timeout = 30 if self._last_send_confidence == "confirmed" else 20
+        self._log("info", f"📬 等待邮箱验证码 (窗口 {first_timeout}s, 发送状态={self._last_send_confidence})")
+        code = mail_client.poll_for_code(timeout=first_timeout, interval=5, since_time=poll_since_time)
 
         if not code:
-            self._log("warning", "⚠️ 验证码超时，等待后重新发送...")
-            time.sleep(random.uniform(12, 18))
-            # 尝试点击重新发送按钮
-            if self._click_resend_code_button(page):
-                # 再次轮询验证码（3次，每次5秒间隔）
-                code = mail_client.poll_for_code(timeout=15, interval=5, since_time=task_start_time)
-                if not code:
-                    self._log("error", "❌ 重新发送后仍未收到验证码")
-                    self._save_screenshot(page, "code_timeout_after_resend")
-                    return {"success": False, "error": "verification code timeout after resend"}
-            else:
-                self._log("error", "❌ 验证码超时且未找到重新发送按钮")
+            from core.config import config
+
+            resend_attempts = int(getattr(config.retry, "verification_code_resend_count", 2) or 0)
+            resend_attempts = max(0, min(5, resend_attempts))
+            if resend_attempts <= 0:
+                self._log("error", "❌ 验证码超时且未启用重发")
                 self._save_screenshot(page, "code_timeout")
                 return {"success": False, "error": "verification code timeout"}
 
+            for resend_index in range(1, resend_attempts + 1):
+                self._log("warning", f"⚠️ 验证码超时，尝试第 {resend_index}/{resend_attempts} 次重发...")
+                time.sleep(random.uniform(1.0, 2.0))
+
+                if not self._click_resend_code_button(page):
+                    self._log("warning", f"⚠️ 未找到重发按钮 ({resend_index}/{resend_attempts})")
+                    continue
+
+                resend_timeout = 25 if self._last_send_confidence == "confirmed" else 15
+                self._log("info", f"📬 已执行重发，继续轮询 (窗口 {resend_timeout}s, 发送状态={self._last_send_confidence}, 第 {resend_index} 次重发)")
+                code = mail_client.poll_for_code(timeout=resend_timeout, interval=5, since_time=poll_since_time)
+                if code:
+                    break
+
+            if not code:
+                self._log("error", "❌ 多次重发后仍未收到验证码")
+                self._save_screenshot(page, "code_timeout_after_resend")
+                return {"success": False, "error": "verification code timeout after resend retries"}
         self._log("info", f"✅ 收到验证码: {code}")
 
         # Step 6: 输入验证码并提交
@@ -546,9 +467,18 @@ class GeminiAutomation:
     def _click_send_code_button(self, page) -> bool:
         """点击发送验证码按钮（如果需要）"""
         time.sleep(random.uniform(1.5, 3))
-        max_send_attempts = 3
-        # 指数退避延迟序列（秒）
-        retry_delays = [15, 30, 60]
+        try:
+            page.listen.start(
+                targets=["batchexecute"],
+                is_regex=False,
+                method=("POST",),
+                res_type=("XHR", "FETCH"),
+            )
+        except Exception:
+            pass
+        max_send_attempts = 5
+        # 适度退避延迟序列（秒）
+        retry_delays = [10, 10, 15, 15, 20]
 
         # 方法1: 直接通过ID查找
         direct_btn = page.ele("#sign-in-with-email", timeout=5)
@@ -557,7 +487,7 @@ class GeminiAutomation:
                 try:
                     self._last_send_error = ""
                     self._human_click(page, direct_btn)
-                    if self._verify_code_send_by_network(page) or self._verify_code_send_status(page):
+                    if self._evaluate_send_after_click(page):
                         self._stop_listen(page)
                         return True
                     delay = retry_delays[min(attempt - 1, len(retry_delays) - 1)]
@@ -582,7 +512,7 @@ class GeminiAutomation:
                         try:
                             self._last_send_error = ""
                             self._human_click(page, btn)
-                            if self._verify_code_send_by_network(page) or self._verify_code_send_status(page):
+                            if self._evaluate_send_after_click(page):
                                 self._stop_listen(page)
                                 return True
                             delay = retry_delays[min(attempt - 1, len(retry_delays) - 1)]
@@ -630,6 +560,23 @@ class GeminiAutomation:
         except Exception:
             pass
 
+    def _evaluate_send_after_click(self, page) -> bool:
+        """Evaluate send-code click result with network/UI fallback."""
+        network_ok = self._verify_code_send_by_network(page)
+        ui_state = self._verify_code_send_status(page)
+        if self._last_send_error or ui_state is False:
+            self._last_send_confidence = "failed"
+            return False
+        if network_ok or ui_state is True:
+            self._last_send_confidence = "confirmed"
+            return True
+        code_input = page.ele("css:input[jsname='ovqh0b']", timeout=2) or page.ele("css:input[name='pinInput']", timeout=1)
+        if code_input:
+            self._last_send_confidence = "unknown"
+            return True
+        self._last_send_confidence = "unknown"
+        return False
+
     def _verify_code_send_by_network(self, page) -> bool:
         """通过监听网络请求验证验证码是否成功发送"""
         try:
@@ -655,9 +602,12 @@ class GeminiAutomation:
                 return False
 
             # 保存网络日志（仅用于调试）
-            self._save_network_packets(packets)
+            save_packets = os.getenv("SAVE_NETWORK_PACKETS", "").strip().lower() in ("1", "true", "yes", "y", "on")
+            if save_packets:
+                self._save_network_packets(packets)
 
             found_batchexecute = False
+            found_relevant_packet = False
             found_batchexecute_error = False
 
             for packet in packets:
@@ -668,15 +618,24 @@ class GeminiAutomation:
                         found_batchexecute = True
 
                         try:
+                            request = packet.request if hasattr(packet, 'request') else None
                             response = packet.response if hasattr(packet, 'response') else None
+                            request_body = str(request.postData) if request and hasattr(request, 'postData') else ""
+                            response_body = str(response.raw_body) if response and hasattr(response, 'raw_body') else ""
+                            payload_lower = f"{request_body}\n{response_body}".lower()
+
+                            if any(token in payload_lower for token in ("sendemailotp", "send_email_otp", "emailotp", "otp")):
+                                found_relevant_packet = True
+
                             if response and hasattr(response, 'raw_body'):
-                                body = response.raw_body
-                                raw_body_str = str(body)
+                                raw_body_str = str(response.raw_body)
                                 if "CAPTCHA_CHECK_FAILED" in raw_body_str:
                                     found_batchexecute_error = True
+                                    found_relevant_packet = True
                                     self._last_send_error = "captcha_check_failed"
                                 elif "SendEmailOtpError" in raw_body_str:
                                     found_batchexecute_error = True
+                                    found_relevant_packet = True
                                     self._last_send_error = "send_email_otp_error"
                         except Exception:
                             pass
@@ -684,7 +643,7 @@ class GeminiAutomation:
                 except Exception:
                     continue
 
-            if found_batchexecute:
+            if found_batchexecute and found_relevant_packet:
                 if found_batchexecute_error:
                     return False
                 return True
@@ -694,7 +653,7 @@ class GeminiAutomation:
         except Exception:
             return False
 
-    def _verify_code_send_status(self, page) -> bool:
+    def _verify_code_send_status(self, page) -> Optional[bool]:
         """检测页面提示判断是否发送成功"""
         time.sleep(random.uniform(1.5, 3))
         try:
@@ -726,9 +685,9 @@ class GeminiAutomation:
                             return True
                 except Exception:
                     continue
-            return True
+            return None
         except Exception:
-            return True
+            return None
 
     def _truncate_text(self, text: str, max_len: int = 2000) -> str:
         if text is None:
@@ -870,6 +829,15 @@ class GeminiAutomation:
     def _click_resend_code_button(self, page) -> bool:
         """点击重新发送验证码按钮"""
         time.sleep(random.uniform(1.5, 3))
+        try:
+            page.listen.start(
+                targets=["batchexecute"],
+                is_regex=False,
+                method=("POST",),
+                res_type=("XHR", "FETCH"),
+            )
+        except Exception:
+            pass
 
         # 查找包含重新发送关键词的按钮（与 _find_verify_button 相反）
         try:
@@ -880,13 +848,25 @@ class GeminiAutomation:
                     try:
                         self._log("info", f"🔄 点击重新发送按钮")
                         self._human_click(page, btn)
-                        time.sleep(random.uniform(1.5, 3))
+                        network_ok = self._verify_code_send_by_network(page)
+                        ui_state = self._verify_code_send_status(page)
+                        if self._last_send_error or ui_state is False:
+                            self._last_send_confidence = "failed"
+                            self._stop_listen(page)
+                            return False
+                        if network_ok or ui_state is True:
+                            self._last_send_confidence = "confirmed"
+                        else:
+                            self._last_send_confidence = "unknown"
+                        self._stop_listen(page)
                         return True
                     except Exception:
                         pass
         except Exception:
             pass
 
+        self._last_send_confidence = "failed"
+        self._stop_listen(page)
         return False
 
     def _check_access_restricted(self, page, email: str = "") -> dict | None:

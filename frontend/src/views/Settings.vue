@@ -99,12 +99,15 @@
             <div class="rounded-2xl border border-border bg-card p-4">
               <p class="text-xs uppercase tracking-[0.3em] text-muted-foreground">自动注册/刷新</p>
               <div class="mt-4 space-y-3">
-                <div class="flex items-center justify-between gap-2">
-                  <Checkbox v-model="localSettings.basic.browser_headless">
-                    无头浏览器
-                  </Checkbox>
-                  <HelpTip text="无头模式适用于服务器环境（如 Docker）。若注册/刷新失败，建议关闭。" />
+                <div class="flex items-center justify-between gap-2 text-xs text-muted-foreground">
+                  <span>浏览器模式</span>
+                  <HelpTip text="normal=正常窗口；silent=静默最小化（有头但尽量不抢焦点）；headless=无头。" />
                 </div>
+                <SelectMenu
+                  v-model="localSettings.basic.browser_mode"
+                  :options="browserModeOptions"
+                  class="w-full"
+                />
                 <div class="flex items-center justify-between gap-2 text-xs text-muted-foreground">
                   <span>浏览器引擎</span>
                   <HelpTip text="UC: 支持无头/有头，但可能失败。DP: 支持无头/有头，更稳定，推荐使用。" />
@@ -463,6 +466,11 @@ const videosRateLimitCooldownHours = createCooldownHours(
 const browserEngineOptions = [
   { label: 'DP - 支持无头/有头', value: 'dp' },
 ]
+const browserModeOptions = [
+  { label: 'normal - 正常窗口', value: 'normal' },
+  { label: 'silent - 静默最小化', value: 'silent' },
+  { label: 'headless - 无头', value: 'headless' },
+]
 const tempMailProviderOptions = mailProviderOptions
 const imageOutputOptions = [
   { label: 'Base64 编码', value: 'base64' },
@@ -504,7 +512,12 @@ watch(settings, (value) => {
   next.basic.duckmail_base_url ||= 'https://api.duckmail.sbs'
   next.basic.duckmail_verify_ssl = next.basic.duckmail_verify_ssl ?? true
   next.basic.browser_engine = next.basic.browser_engine || 'dp'
-  next.basic.browser_headless = next.basic.browser_headless ?? false
+  const normalizedBrowserMode =
+    next.basic.browser_mode === 'normal' || next.basic.browser_mode === 'silent' || next.basic.browser_mode === 'headless'
+      ? next.basic.browser_mode
+      : ((next.basic.browser_headless ?? false) ? 'headless' : 'normal')
+  next.basic.browser_mode = normalizedBrowserMode
+  next.basic.browser_headless = normalizedBrowserMode === 'headless'
   next.basic.refresh_window_hours = Number.isFinite(next.basic.refresh_window_hours)
     ? next.basic.refresh_window_hours
     : 1
@@ -580,6 +593,13 @@ const handleSave = async () => {
   isSaving.value = true
 
   try {
+    localSettings.value.basic.browser_mode =
+      localSettings.value.basic.browser_mode === 'normal' ||
+      localSettings.value.basic.browser_mode === 'silent' ||
+      localSettings.value.basic.browser_mode === 'headless'
+        ? localSettings.value.basic.browser_mode
+        : 'normal'
+    localSettings.value.basic.browser_headless = localSettings.value.basic.browser_mode === 'headless'
     await settingsStore.updateSettings(localSettings.value)
     toast.success('设置保存成功')
   } catch (error: any) {

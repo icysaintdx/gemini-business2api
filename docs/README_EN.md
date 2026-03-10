@@ -77,13 +77,13 @@ cd gemini-business2api
 cp .env.example .env
 # Edit .env to set ADMIN_KEY
 
-docker-compose up -d
+docker compose up -d
 
 # View logs
-docker-compose logs -f
+docker compose logs -f
 
 # Update to latest version
-docker-compose pull && docker-compose up -d
+docker compose pull && docker compose up -d
 ```
 
 ---
@@ -152,7 +152,8 @@ python main.py
 
 ## 🗄️ Database Persistence
 
-Set `DATABASE_URL` to persist accounts, settings, and stats. Without it, SQLite (`data.db`) is used automatically.
+By default, do not set `DATABASE_URL`. Use local SQLite (`data.db`) directly (recommended).
+Use an online database only when necessary (for example: multi-instance shared data, or cloud platforms without persistent volume mounts).
 
 **Configuration:**
 - Local deployment → add to `.env`
@@ -162,7 +163,18 @@ Set `DATABASE_URL` to persist accounts, settings, and stats. Without it, SQLite 
 DATABASE_URL=postgresql://user:password@host/dbname?sslmode=require
 ```
 
-**Free PostgreSQL Providers:**
+### Local Refresh Service Recommendation (`refresh-worker`)
+
+- Recommended topology: deploy `main` on cloud, run `refresh-worker` locally for browser-based refresh jobs.
+- Prefer local SQLite (`data.db`) as refresh-side cache for better stability under network jitter.
+- If your local refresh worker needs to connect to the remote admin panel directly, use remote interface + `ADMIN_KEY`:
+
+```env
+REMOTE_PROJECT_BASE_URL=https://your-beta-domain.example
+REMOTE_PROJECT_PASSWORD=your_admin_key
+```
+
+**Online PostgreSQL (Optional):**
 
 | Service | Free Tier | How to Get |
 |---------|-----------|-----------|
@@ -231,7 +243,7 @@ curl http://localhost:7860/v1/chat/completions \
 
 ## 📧 Email Provider Configuration
 
-The project supports 4 temporary email providers for automatic account registration. Switch and configure them in **Admin Panel → System Settings → Temp Email Provider**.
+The project supports 5 temporary email providers for automatic account registration. Switch and configure them in **Admin Panel → System Settings → Temp Email Provider**.
 
 ### Moemail (Default)
 
@@ -263,6 +275,19 @@ Self-hosted temporary email service, for users with their own servers.
 - **Project**: [github.com/idinging/freemail](https://github.com/idinging/freemail)
 - **Config**: Self-hosted service URL + JWT Token + Domain (optional)
 
+### Cloudflare Mail (CFMail)
+
+Cloudflare-based temporary email service, suitable for self-hosted or lightweight deployments.
+
+- **Project**: [github.com/dreamhunter2333/cloudflare_temp_email](https://github.com/dreamhunter2333/cloudflare_temp_email)
+- **Admin Panel Path**: System Settings → Temp Email Provider = `cfmail`
+- **Config**:
+  - Cloudflare Mail API URL (`cfmail_base_url`)
+  - Access password (`cfmail_api_key`, can be empty if your instance does not require it)
+  - Email domain (`cfmail_domain`, optional, without `@`)
+- **Import format (optional)**: `cfmail----you@example.com----jwtToken`
+  - The third field is the mailbox JWT token used to fetch verification codes.
+
 > **Tip**: All email settings are configured in the admin panel. Microsoft email login is also handled through the admin panel.
 
 ---
@@ -281,7 +306,7 @@ In addition to local Docker Compose, these platforms support Docker image deploy
 
 > Docker image: `cooooookk/gemini-business2api:latest`
 >
-> Set `ADMIN_KEY` and `DATABASE_URL` environment variables when deploying.
+> Set `ADMIN_KEY` first. Configure `DATABASE_URL` only when needed (local `data.db` is the default recommendation).
 
 ### Zeabur Deployment Guide
 
@@ -292,7 +317,7 @@ In addition to local Docker Compose, these platforms support Docker image deploy
    | Variable | Required | Description |
    |----------|----------|-------------|
    | `ADMIN_KEY` | ✅ | Admin panel login key |
-   | `DATABASE_URL` | Optional | PostgreSQL connection string (recommended to avoid data loss on restart) |
+   | `DATABASE_URL` | Optional | PostgreSQL connection string (configure only when online DB is required) |
 
 4. **Persistent Storage** (Important):
 
@@ -316,11 +341,38 @@ To deploy the account refresh service separately from the main API, use the [`re
 git clone -b refresh-worker https://github.com/Dreamy-rain/gemini-business2api.git gemini-refresh-worker
 cd gemini-refresh-worker
 cp .env.example .env
-# Edit .env to set DATABASE_URL
-docker-compose up -d
+# Edit .env (default local data.db; set DATABASE_URL only when needed)
+docker compose up -d
 ```
 
 This service reads accounts from the database and runs scheduled credential refresh independently. Supports cron scheduling, batch processing, and cooldown deduplication.
+
+---
+
+## 🌿 Branch Guide
+
+To keep deployment logic clear, choose branches by scenario:
+
+- `main`: stable line (recommended for production API + admin panel)
+- `beta`: pre-release line (new features land here first)
+- `refresh-worker`: standalone refresh service branch (ideal for local refresh worker + remote API)
+- `clash-proxy`: Clash proxy branch (for registration/refresh in proxy-constrained networks)
+
+Recommended setup:
+
+- Deploy `main`/`beta` on cloud for API + admin panel
+- Run `refresh-worker` locally for account registration/refresh
+- Use `clash-proxy` when your network path relies on Clash proxy routing
+
+### Clash Proxy Deployment Example
+
+```bash
+git clone -b clash-proxy https://github.com/Dreamy-rain/gemini-business2api.git gemini-business2api-clash
+cd gemini-business2api-clash
+cp .env.example .env
+# Edit .env and proxy settings in the admin panel, then start
+docker compose up -d
+```
 
 ---
 

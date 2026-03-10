@@ -575,7 +575,7 @@
               <p class="mt-1 font-mono">cfmail----email----jwtToken</p>
               <p class="mt-1 font-mono">email----password----clientId----refreshToken</p>
               <p class="mt-2">导入后请执行一次"刷新选中"以获取 Cookie。</p>
-              <p class="mt-1">注册失败建议关闭无头浏览器再试</p>
+              <p class="mt-1">注册失败可先切换为 normal 或 silent 再重试</p>
             </div>
             <div v-if="importError" class="rounded-2xl border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-600">
               {{ importError }}
@@ -750,28 +750,41 @@
             v-if="registerTask || loginTask || registerLogs.length || loginLogs.length"
             class="flex min-h-0 flex-1 flex-col px-6 pb-4"
           >
+            <div class="mb-2 flex items-center justify-between gap-3">
+              <p class="text-[11px] text-muted-foreground">
+                {{ taskLogMode === 'summary' ? '摘要模式仅保留关键事件（开始、结束、失败、告警）。' : '详情模式显示全部日志。' }}
+              </p>
+              <button
+                type="button"
+                class="rounded-full px-3 py-1 text-xs font-medium transition-colors"
+                :class="taskLogMode === 'summary' ? 'bg-primary text-primary-foreground' : 'border border-border text-muted-foreground hover:text-foreground'"
+                @click="toggleTaskLogMode"
+              >
+                {{ taskLogMode === 'summary' ? '摘要模式' : '详情模式' }}
+              </button>
+            </div>
             <div
               ref="taskLogsRef"
               class="scrollbar-slim flex-1 overflow-y-auto rounded-2xl border border-border bg-muted/30 p-3"
             >
-              <div v-if="registerLogs.length" class="space-y-2">
+              <div v-if="visibleRegisterLogs.length" class="space-y-2">
                 <p class="text-xs font-semibold text-foreground">注册日志</p>
                 <div class="space-y-1 text-[11px] text-muted-foreground">
-                  <div v-for="(log, index) in registerLogs" :key="`reg-${index}`" class="font-mono">
+                  <div v-for="(log, index) in visibleRegisterLogs" :key="`reg-${index}`" class="font-mono">
                     {{ formatLogLine(log) }}
                   </div>
                 </div>
               </div>
-              <div v-if="loginLogs.length" class="mt-4 space-y-2">
+              <div v-if="visibleLoginLogs.length" class="mt-4 space-y-2">
                 <p class="text-xs font-semibold text-foreground">刷新日志</p>
                 <div class="space-y-1 text-[11px] text-muted-foreground">
-                  <div v-for="(log, index) in loginLogs" :key="`login-${index}`" class="font-mono">
+                  <div v-for="(log, index) in visibleLoginLogs" :key="`login-${index}`" class="font-mono">
                     {{ formatLogLine(log) }}
                   </div>
                 </div>
               </div>
-              <div v-if="!registerLogs.length && !loginLogs.length" class="text-xs text-muted-foreground">
-                日志已清空，新的日志会继续显示。
+              <div v-if="!visibleRegisterLogs.length && !visibleLoginLogs.length" class="text-xs text-muted-foreground">
+                {{ registerLogs.length || loginLogs.length ? '摘要模式下暂无关键日志，可切换到详情模式查看全部日志。' : '日志已清空，新的日志会继续显示。' }}
               </div>
             </div>
           </div>
@@ -807,7 +820,7 @@
                     <div class="flex items-center justify-between">
                       <div>
                         <p class="text-sm font-medium text-foreground">启用定时刷新</p>
-                        <p class="mt-1 text-xs text-muted-foreground">自动检测并分批刷新即将过期的账号</p>
+                        <p class="mt-1 text-xs text-muted-foreground">自动检测并一次性刷新即将过期的账号</p>
                       </div>
                       <button
                         type="button"
@@ -837,37 +850,29 @@
                       </p>
                     </div>
 
-                    <div class="grid grid-cols-3 gap-3">
-                      <div class="space-y-2">
-                        <label class="block text-xs text-muted-foreground">每批数量</label>
-                        <input
-                          v-model.number="refreshBatchSize"
-                          type="number"
-                          min="1"
-                          max="20"
-                          class="w-full rounded-2xl border border-input bg-background px-3 py-2 text-sm"
-                        />
-                      </div>
-                      <div class="space-y-2">
-                        <label class="block text-xs text-muted-foreground">批次间隔(分)</label>
-                        <input
-                          v-model.number="refreshBatchInterval"
-                          type="number"
-                          min="5"
-                          max="120"
-                          class="w-full rounded-2xl border border-input bg-background px-3 py-2 text-sm"
-                        />
-                      </div>
-                      <div class="space-y-2">
-                        <label class="block text-xs text-muted-foreground">冷却时间(小时)</label>
-                        <input
-                          v-model.number="refreshCooldownHours"
-                          type="number"
-                          min="1"
-                          max="48"
-                          class="w-full rounded-2xl border border-input bg-background px-3 py-2 text-sm"
-                        />
-                      </div>
+                    <div class="space-y-2">
+                      <label class="block text-xs text-muted-foreground">冷却时间(小时)</label>
+                      <input
+                        v-model.number="refreshCooldownHours"
+                        type="number"
+                        min="1"
+                        max="48"
+                        class="w-full rounded-2xl border border-input bg-background px-3 py-2 text-sm"
+                      />
+                    </div>
+
+                    <div class="space-y-2">
+                      <label class="block text-xs text-muted-foreground">验证码重发次数</label>
+                      <input
+                        v-model.number="verificationCodeResendCount"
+                        type="number"
+                        min="0"
+                        max="5"
+                        class="w-full rounded-2xl border border-input bg-background px-3 py-2 text-sm"
+                      />
+                      <p class="text-xs text-muted-foreground">
+                        验证码首次等待超时后，额外尝试重发的次数（默认 2，0 表示不重发）
+                      </p>
                     </div>
 
                     <div class="space-y-2">
@@ -884,10 +889,43 @@
                       </p>
                     </div>
 
+                    <div class="space-y-3 rounded-2xl border border-border bg-muted/20 px-4 py-3">
+                      <div>
+                        <p class="text-sm font-medium text-foreground">浏览器模式</p>
+                        <p class="mt-1 text-xs text-muted-foreground">normal 正常窗口；silent 静默最小化（有头但尽量不抢焦点）；headless 无头</p>
+                      </div>
+                      <div class="grid grid-cols-3 gap-2">
+                        <button
+                          type="button"
+                          class="rounded-xl border px-3 py-2 text-xs transition-colors"
+                          :class="browserMode === 'normal' ? 'border-primary bg-primary/10 text-primary' : 'border-border text-muted-foreground hover:text-foreground'"
+                          @click="browserMode = 'normal'"
+                        >
+                          normal
+                        </button>
+                        <button
+                          type="button"
+                          class="rounded-xl border px-3 py-2 text-xs transition-colors"
+                          :class="browserMode === 'silent' ? 'border-primary bg-primary/10 text-primary' : 'border-border text-muted-foreground hover:text-foreground'"
+                          @click="browserMode = 'silent'"
+                        >
+                          silent
+                        </button>
+                        <button
+                          type="button"
+                          class="rounded-xl border px-3 py-2 text-xs transition-colors"
+                          :class="browserMode === 'headless' ? 'border-primary bg-primary/10 text-primary' : 'border-border text-muted-foreground hover:text-foreground'"
+                          @click="browserMode = 'headless'"
+                        >
+                          headless
+                        </button>
+                      </div>
+                    </div>
                     <div class="rounded-2xl border border-border bg-muted/30 px-4 py-3 text-xs text-muted-foreground">
                       <p class="mb-2 font-medium text-foreground">说明</p>
                       <ul class="list-inside list-disc space-y-1">
-                        <li>每批刷新指定数量的账号，等当前批完成后再开始下一批</li>
+                        <li>同一时间只会执行一个刷新任务，新触发会复用当前任务</li>
+                        <li>到达触发时间后，会一次性处理本轮所有符合条件的账号</li>
                         <li>同一账号刷新成功后，在冷却时间内不会被再次选中</li>
                         <li>修改配置后立即生效，无需重启服务</li>
                       </ul>
@@ -1274,10 +1312,10 @@ const lastRegisterTaskId = ref<string | null>(null)
 const lastLoginTaskId = ref<string | null>(null)
 const scheduledRefreshEnabled = ref(false)
 const scheduledRefreshCron = ref('08:00,20:00')
-const refreshBatchSize = ref(5)
-const refreshBatchInterval = ref(30)
 const refreshCooldownHours = ref(12)
+const verificationCodeResendCount = ref(2)
 const refreshWindowHours = ref(24)
+const browserMode = ref<'normal' | 'silent' | 'headless'>('normal')
 const isLoadingScheduledConfig = ref(false)
 const isSavingScheduledConfig = ref(false)
 const cachedSettings = ref<any>(null)  // 缓存配置以避免重复API调用
@@ -1289,32 +1327,19 @@ const loginLogClearMarker = ref<TaskLogLine | null>(null)
 const registerTask = ref<RegisterTask | null>(null)
 const loginTask = ref<LoginTask | null>(null)
 const refreshingAccountIds = ref<Set<string>>(new Set())  // 正在刷新的账户ID集合（仅用于显示状态）
+const queuedRefreshAccountIds = ref<Set<string>>(new Set())  // 刷新任务中尚未处理的账户ID集合（仅用于显示状态）
 const taskLogsRef = ref<HTMLDivElement | null>(null)
 const isRegistering = ref(false)
 const isRefreshing = ref(false)
 const automationError = ref('')
-const REGISTER_TASK_CACHE_KEY = 'accounts-register-task-cache'
-const LOGIN_TASK_CACHE_KEY = 'accounts-login-task-cache'
 const REGISTER_CLEAR_KEY = 'accounts-register-log-clear'
 const LOGIN_CLEAR_KEY = 'accounts-login-log-clear'
-const REGISTER_DISMISS_KEY = 'accounts-register-task-dismissed'
-const LOGIN_DISMISS_KEY = 'accounts-login-task-dismissed'
-const REGISTER_CLEARED_KEY = 'accounts-register-task-cleared'
-const LOGIN_CLEARED_KEY = 'accounts-login-task-cleared'
+const TASK_LOG_MODE_KEY = 'accounts-task-log-mode'
+type TaskLogMode = 'summary' | 'detail'
+const taskLogMode = ref<TaskLogMode>(localStorage.getItem(TASK_LOG_MODE_KEY) === 'detail' ? 'detail' : 'summary')
+watch(taskLogMode, (mode) => localStorage.setItem(TASK_LOG_MODE_KEY, mode))
 
 type TaskKind = 'register' | 'login'
-const TASK_KEYS = {
-  register: {
-    clearKey: REGISTER_CLEAR_KEY,
-    dismissKey: REGISTER_DISMISS_KEY,
-    clearedKey: REGISTER_CLEARED_KEY,
-  },
-  login: {
-    clearKey: LOGIN_CLEAR_KEY,
-    dismissKey: LOGIN_DISMISS_KEY,
-    clearedKey: LOGIN_CLEARED_KEY,
-  },
-} as const
 const editForm = ref<AccountConfigItem>({
   id: '',
   secure_c_ses: '',
@@ -1327,6 +1352,8 @@ const editIndex = ref<number | null>(null)
 const configAccounts = ref<AccountConfigItem[]>([])
 const statusOptions = [
   { label: '全部状态', value: 'all' },
+  { label: '刷新中', value: '刷新中' },
+  { label: '排队中', value: '排队中' },
   { label: '正常', value: '正常' },
   { label: '即将过期', value: '即将过期' },
   { label: '已过期', value: '已过期' },
@@ -1367,103 +1394,12 @@ const refreshAccounts = async () => {
   showMoreActions.value = false
 }
 
-const readCachedTask = <T,>(key: string): T | null => {
-  try {
-    const raw = localStorage.getItem(key)
-    return raw ? (JSON.parse(raw) as T) : null
-  } catch {
-    return null
-  }
-}
-
-const writeCachedTask = (key: string, value: unknown) => {
-  try {
-    localStorage.setItem(key, JSON.stringify(value))
-  } catch {
-    // ignore storage errors
-  }
-}
-
-const removeCachedTask = (key: string) => {
-  try {
-    localStorage.removeItem(key)
-  } catch {
-    // ignore storage errors
-  }
-}
-
-type DismissedTaskMeta = { id?: string; created_at?: number } | null
-
-const readDismissedTaskMeta = (key: string): DismissedTaskMeta => {
-  try {
-    const raw = localStorage.getItem(key)
-    if (!raw) return null
-    try {
-      const parsed = JSON.parse(raw) as Partial<{ id: string; created_at: number }>
-      if (parsed && (parsed.id || typeof parsed.created_at === 'number')) {
-        return { id: parsed.id, created_at: parsed.created_at }
-      }
-    } catch {
-      // Backward compatibility: plain id string
-      return { id: raw }
-    }
-    return null
-  } catch {
-    return null
-  }
-}
-
-const writeDismissedTaskMeta = (key: string, meta: DismissedTaskMeta) => {
-  try {
-    if (!meta || (!meta.id && typeof meta.created_at !== 'number')) {
-      localStorage.removeItem(key)
-      return
-    }
-    localStorage.setItem(key, JSON.stringify(meta))
-  } catch {
-    // ignore storage errors
-  }
-}
-
-const readDismissedTaskId = (key: string) => readDismissedTaskMeta(key)?.id || null
-
-const writeDismissedTaskId = (key: string, taskId: string | null) => {
-  if (!taskId) {
-    writeDismissedTaskMeta(key, null)
-    return
-  }
-  writeDismissedTaskMeta(key, { id: taskId })
-}
-
-const isTaskMetaMatch = (task: { id?: string; created_at?: number } | null | undefined, meta: DismissedTaskMeta) => {
-  if (!task || !meta) return false
-  if (meta.id && task.id && task.id === meta.id) return true
-  if (typeof meta.created_at === 'number' && typeof task.created_at === 'number' && task.created_at === meta.created_at) {
-    return true
-  }
-  return false
-}
-
-const isTaskDismissed = (task: { id?: string; created_at?: number } | null | undefined, meta: DismissedTaskMeta) =>
-  isTaskMetaMatch(task, meta)
-
-const readClearedTaskMeta = (key: string): DismissedTaskMeta => readDismissedTaskMeta(key)
-const writeClearedTaskMeta = (key: string, meta: DismissedTaskMeta) => writeDismissedTaskMeta(key, meta)
-
 const isTaskActive = (task: RegisterTask | LoginTask | null | undefined) => {
   const status = task?.status
   return status === 'running' || status === 'pending'
 }
 
 const getTaskByKind = (kind: TaskKind) => (kind === 'register' ? registerTask.value : loginTask.value)
-
-const markTaskCleared = (kind: TaskKind, task: RegisterTask | LoginTask) => {
-  const key = TASK_KEYS[kind].clearedKey
-  writeClearedTaskMeta(key, {
-    id: task.id,
-    created_at: task.created_at,
-  })
-}
 
 const setLogClearMarker = (kind: TaskKind, marker: TaskLogLine | null) => {
   if (kind === 'register') {
@@ -1481,25 +1417,49 @@ const clearTaskSnapshot = (kind: TaskKind, persist = true) => {
   }
 }
 
-const clearFinishedTask = (kind: TaskKind) => {
-  const task = getTaskByKind(kind)
-  if (!task || isTaskActive(task)) return
-  markTaskCleared(kind, task)
-  clearTaskSnapshot(kind, true)
-}
-
 const handleTaskIdle = (kind: TaskKind) => {
-  // 后端 idle：保留现有任务快照
-  cleanupCancelledTasks()
-}
-
-const handleTaskNotFound = (kind: TaskKind) => {
+  // 后端返回 idle 时：
+  // - 运行中任务：收敛为终态，避免前端卡在“执行中”且保留日志
+  // - 已完成任务：保留快照和日志，直到手动清空或被新任务替换
   if (kind === 'register') {
     clearRegisterTimer()
     isRegistering.value = false
+    const current = registerTask.value
+    if (current && isTaskActive(current)) {
+      // 避免竞态导致日志被清空：收敛为终态并保留已有日志
+      syncRegisterTask({ ...current, status: 'cancelled' } as RegisterTask)
+    }
+    return
+  }
+  clearLoginTimer()
+  isRefreshing.value = false
+  refreshingAccountIds.value = new Set()
+  queuedRefreshAccountIds.value = new Set()
+  const current = loginTask.value
+  if (current && isTaskActive(current)) {
+    // 避免竞态导致日志被清空：收敛为终态并保留已有日志
+    syncLoginTask({ ...current, status: 'cancelled' } as LoginTask)
+  }
+}
+
+const handleTaskNotFound = (kind: TaskKind) => {
+  // 与 idle 同策略：仅清理运行态，保留已完成日志
+  if (kind === 'register') {
+    clearRegisterTimer()
+    isRegistering.value = false
+    const current = registerTask.value
+    if (current && isTaskActive(current)) {
+      syncRegisterTask({ ...current, status: 'cancelled' } as RegisterTask)
+    }
   } else {
     clearLoginTimer()
     isRefreshing.value = false
+    refreshingAccountIds.value = new Set()
+    queuedRefreshAccountIds.value = new Set()
+    const current = loginTask.value
+    if (current && isTaskActive(current)) {
+      syncLoginTask({ ...current, status: 'cancelled' } as LoginTask)
+    }
   }
 }
 
@@ -1524,9 +1484,9 @@ const handleTaskInactive = (kind: TaskKind, task: RegisterTask | LoginTask) => {
 }
 
 const shouldKeepInactiveTask = (kind: TaskKind, task: RegisterTask | LoginTask) => {
-  const dismissedMeta = readDismissedTaskMeta(TASK_KEYS[kind].dismissKey)
-  const clearedMeta = readClearedTaskMeta(TASK_KEYS[kind].clearedKey)
-  return !isTaskDismissed(task, dismissedMeta) && !isTaskMetaMatch(task, clearedMeta)
+  void kind
+  // 统一以后端状态为准，不再依赖本地“dismiss/clear”元数据
+  return !!task
 }
 
 const loadCurrentTaskByKind = async (kind: TaskKind) => {
@@ -1587,80 +1547,89 @@ const writeClearMarker = (key: string, value: TaskLogLine | null) => {
 }
 
 const syncRegisterTask = (task: RegisterTask | null, persist = true) => {
+  void persist
   if (!task) {
     registerTask.value = null
     lastRegisterTaskId.value = null
     registerLogClearMarker.value = null
-    if (persist) {
-      removeCachedTask(REGISTER_TASK_CACHE_KEY)
-      writeClearMarker(REGISTER_CLEAR_KEY, null)
-    }
+    writeClearMarker(REGISTER_CLEAR_KEY, null)
     return
   }
 
   registerTask.value = task
   if (task.id && task.id !== lastRegisterTaskId.value) {
     lastRegisterTaskId.value = task.id
-    writeDismissedTaskMeta(REGISTER_DISMISS_KEY, null)
-    writeClearedTaskMeta(REGISTER_CLEARED_KEY, null)
     setLogClearMarker('register', null)
     writeClearMarker(REGISTER_CLEAR_KEY, null)
-    // 新注册任务启动时，自动清理已结束的刷新任务，避免堆叠显示
-    clearFinishedTask('login')
-  }
-  if (persist) {
-    writeCachedTask(REGISTER_TASK_CACHE_KEY, task)
   }
 }
 
 const syncLoginTask = (task: LoginTask | null, persist = true) => {
+  void persist
   if (!task) {
     loginTask.value = null
     lastLoginTaskId.value = null
     loginLogClearMarker.value = null
-    if (persist) {
-      removeCachedTask(LOGIN_TASK_CACHE_KEY)
-      writeClearMarker(LOGIN_CLEAR_KEY, null)
-    }
+    refreshingAccountIds.value = new Set()
+    queuedRefreshAccountIds.value = new Set()
+    writeClearMarker(LOGIN_CLEAR_KEY, null)
     return
   }
 
   loginTask.value = task
   if (task.id && task.id !== lastLoginTaskId.value) {
     lastLoginTaskId.value = task.id
-    writeDismissedTaskMeta(LOGIN_DISMISS_KEY, null)
-    writeClearedTaskMeta(LOGIN_CLEARED_KEY, null)
     setLogClearMarker('login', null)
     writeClearMarker(LOGIN_CLEAR_KEY, null)
-    // 新刷新任务启动时，自动清理已结束的注册任务，避免堆叠显示
-    clearFinishedTask('register')
   }
-  if (persist) {
-    writeCachedTask(LOGIN_TASK_CACHE_KEY, task)
+  const { refreshingIds, queuedIds } = getLoginRefreshDisplayState(task)
+  refreshingAccountIds.value = refreshingIds
+  queuedRefreshAccountIds.value = queuedIds
+}
+
+const getLoginRefreshDisplayState = (task: LoginTask | null) => {
+  const empty = {
+    refreshingIds: new Set<string>(),
+    queuedIds: new Set<string>(),
+  }
+  if (!task) return empty
+
+  const ids = Array.isArray(task.account_ids) ? task.account_ids : []
+  if (!ids.length) return empty
+
+  if (task.status === 'pending') {
+    return {
+      refreshingIds: new Set<string>(),
+      queuedIds: new Set<string>(ids),
+    }
+  }
+
+  if (task.status !== 'running') {
+    return empty
+  }
+
+  const progress = Number.isFinite(task.progress) ? Math.floor(Number(task.progress)) : 0
+  if (progress < 0 || progress >= ids.length) {
+    return empty
+  }
+
+  return {
+    // 后端 progress 表示“已完成数量”，running 时当前处理下标即 progress
+    refreshingIds: new Set<string>([ids[progress]]),
+    queuedIds: new Set<string>(ids.slice(progress + 1)),
   }
 }
 
 const hydrateTaskCache = () => {
+  // 统一以后端状态为准，任务状态不走本地快照恢复
   registerLogClearMarker.value = readClearMarker(REGISTER_CLEAR_KEY)
   loginLogClearMarker.value = readClearMarker(LOGIN_CLEAR_KEY)
-  const cachedRegister = readCachedTask<RegisterTask>(REGISTER_TASK_CACHE_KEY)
-  if (cachedRegister) {
-    const dismissedMeta = readDismissedTaskMeta(TASK_KEYS.register.dismissKey)
-    const clearedMeta = readClearedTaskMeta(TASK_KEYS.register.clearedKey)
-    if (!isTaskDismissed(cachedRegister, dismissedMeta) && !isTaskMetaMatch(cachedRegister, clearedMeta)) {
-      registerTask.value = cachedRegister
-      lastRegisterTaskId.value = cachedRegister.id || null
-    }
-  }
-  const cachedLogin = readCachedTask<LoginTask>(LOGIN_TASK_CACHE_KEY)
-  if (cachedLogin) {
-    const dismissedMeta = readDismissedTaskMeta(TASK_KEYS.login.dismissKey)
-    const clearedMeta = readClearedTaskMeta(TASK_KEYS.login.clearedKey)
-    if (!isTaskDismissed(cachedLogin, dismissedMeta) && !isTaskMetaMatch(cachedLogin, clearedMeta)) {
-      loginTask.value = cachedLogin
-      lastLoginTaskId.value = cachedLogin.id || null
-    }
-  }
+  registerTask.value = null
+  loginTask.value = null
+  lastRegisterTaskId.value = null
+  lastLoginTaskId.value = null
+  refreshingAccountIds.value = new Set()
+  queuedRefreshAccountIds.value = new Set()
 }
 
 const cleanupCancelledTasks = () => {
@@ -2105,20 +2074,7 @@ const fetchTaskHistory = async () => {
     })
     if (!response.ok) throw new Error('获取历史记录失败')
     const data = await response.json()
-    const history = Array.isArray(data.history) ? data.history : []
-    const dismissedRegister = readDismissedTaskMeta(REGISTER_DISMISS_KEY)
-    const dismissedLogin = readDismissedTaskMeta(LOGIN_DISMISS_KEY)
-    taskHistory.value = history.filter((record: any) => {
-      const meta = record?.type === 'register' ? dismissedRegister : dismissedLogin
-      if (!meta) return true
-      const id = typeof record?.id === 'string' ? record.id : String(record?.id || '')
-      const createdAt = typeof record?.created_at === 'number' ? record.created_at : undefined
-      if (meta.id && id && id === meta.id) return false
-      if (typeof meta.created_at === 'number' && typeof createdAt === 'number' && createdAt === meta.created_at) {
-        return false
-      }
-      return true
-    })
+    taskHistory.value = Array.isArray(data.history) ? data.history : []
   } catch (error: any) {
     toast.error(error?.message || '获取历史记录失败')
   } finally {
@@ -2148,8 +2104,6 @@ const clearTaskHistory = async () => {
 
 const closeTaskModal = () => {
   isTaskOpen.value = false
-  // 关闭弹窗时，确保已中断任务不会被缓存"复活"
-  cleanupCancelledTasks()
 }
 
 const loadScheduledConfig = async () => {
@@ -2159,10 +2113,15 @@ const loadScheduledConfig = async () => {
     cachedSettings.value = settings  // 缓存配置
     scheduledRefreshEnabled.value = settings.retry.scheduled_refresh_enabled ?? false
     scheduledRefreshCron.value = settings.retry.scheduled_refresh_cron ?? '08:00,20:00'
-    refreshBatchSize.value = settings.retry.refresh_batch_size ?? 5
-    refreshBatchInterval.value = settings.retry.refresh_batch_interval_minutes ?? 30
     refreshCooldownHours.value = settings.retry.refresh_cooldown_hours ?? 12
+    verificationCodeResendCount.value = settings.retry.verification_code_resend_count ?? 2
     refreshWindowHours.value = settings.basic.refresh_window_hours ?? 24
+    browserMode.value =
+      settings.basic.browser_mode === 'normal' ||
+      settings.basic.browser_mode === 'silent' ||
+      settings.basic.browser_mode === 'headless'
+        ? settings.basic.browser_mode
+        : ((settings.basic.browser_headless ?? false) ? 'headless' : 'normal')
   } catch (error: any) {
     toast.error(error?.message || '加载定时任务配置失败')
   } finally {
@@ -2170,20 +2129,62 @@ const loadScheduledConfig = async () => {
   }
 }
 
+const normalizeScheduledCronInput = (value: string) => {
+  const raw = (value || '').trim()
+  if (!raw) {
+    throw new Error('刷新时间不能为空')
+  }
+
+  if (raw.startsWith('*/')) {
+    const minutes = Number(raw.slice(2))
+    if (!Number.isInteger(minutes) || minutes < 5) {
+      throw new Error('间隔模式格式错误，应为 */分钟数，且最小 5 分钟')
+    }
+    return `*/${minutes}`
+  }
+
+  const times = raw
+    .split(',')
+    .map(item => item.trim())
+    .filter(Boolean)
+  if (!times.length) {
+    throw new Error('每日模式至少提供一个时间点')
+  }
+
+  const normalized: string[] = []
+  for (const time of times) {
+    const parts = time.split(':')
+    if (parts.length !== 2) {
+      throw new Error(`时间格式错误: ${time}`)
+    }
+    const hour = Number(parts[0])
+    const minute = Number(parts[1])
+    if (!Number.isInteger(hour) || !Number.isInteger(minute) || hour < 0 || hour > 23 || minute < 0 || minute > 59) {
+      throw new Error(`时间超出范围: ${time}`)
+    }
+    const normalizedTime = `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`
+    if (!normalized.includes(normalizedTime)) {
+      normalized.push(normalizedTime)
+    }
+  }
+  normalized.sort()
+  return normalized.join(',')
+}
+
 const saveScheduledConfig = async () => {
-  // 验证每批数量
-  if (isNaN(refreshBatchSize.value) || refreshBatchSize.value < 1 || refreshBatchSize.value > 20) {
-    toast.error('每批数量必须在 1-20 之间')
-    return
-  }
-  // 验证批次间隔
-  if (isNaN(refreshBatchInterval.value) || refreshBatchInterval.value < 5 || refreshBatchInterval.value > 120) {
-    toast.error('批次间隔必须在 5-120 分钟之间')
-    return
-  }
   // 验证冷却时间
   if (isNaN(refreshCooldownHours.value) || refreshCooldownHours.value < 1 || refreshCooldownHours.value > 48) {
     toast.error('冷却时间必须在 1-48 小时之间')
+    return
+  }
+
+  // 验证验证码重发次数
+  if (isNaN(verificationCodeResendCount.value) || !Number.isInteger(verificationCodeResendCount.value)) {
+    toast.error('验证码重发次数必须是有效的整数')
+    return
+  }
+  if (verificationCodeResendCount.value < 0 || verificationCodeResendCount.value > 5) {
+    toast.error('验证码重发次数必须在 0-5 之间')
     return
   }
 
@@ -2197,18 +2198,25 @@ const saveScheduledConfig = async () => {
     return
   }
 
+  if (browserMode.value !== 'normal' && browserMode.value !== 'silent' && browserMode.value !== 'headless') {
+    toast.error('浏览器模式必须是 normal / silent / headless')
+    return
+  }
   isSavingScheduledConfig.value = true
   try {
+    const normalizedCron = normalizeScheduledCronInput(scheduledRefreshCron.value)
     // 使用缓存的配置，避免重复API调用
     const settings = cachedSettings.value || await settingsApi.get()
     settings.retry.scheduled_refresh_enabled = scheduledRefreshEnabled.value
-    settings.retry.scheduled_refresh_cron = scheduledRefreshCron.value
-    settings.retry.refresh_batch_size = refreshBatchSize.value
-    settings.retry.refresh_batch_interval_minutes = refreshBatchInterval.value
+    settings.retry.scheduled_refresh_cron = normalizedCron
     settings.retry.refresh_cooldown_hours = refreshCooldownHours.value
+    settings.retry.verification_code_resend_count = verificationCodeResendCount.value
     settings.basic.refresh_window_hours = refreshWindowHours.value
+    settings.basic.browser_mode = browserMode.value
+    settings.basic.browser_headless = browserMode.value === 'headless'
     await settingsApi.update(settings)
     cachedSettings.value = settings  // 更新缓存
+    scheduledRefreshCron.value = normalizedCron
     toast.success('定时任务配置已保存')
   } catch (error: any) {
     toast.error(error?.message || '保存定时任务配置失败')
@@ -2228,7 +2236,6 @@ const clearTaskLogs = async () => {
     const task = getTaskByKind(kind)
     if (!task) return
     if (!isTaskActive(task)) {
-      markTaskCleared(kind, task)
       clearTaskSnapshot(kind, true)
       return
     }
@@ -2236,7 +2243,7 @@ const clearTaskLogs = async () => {
     if (!logs.length) return
     const marker = logs[logs.length - 1]
     setLogClearMarker(kind, marker)
-    writeClearMarker(TASK_KEYS[kind].clearKey, marker)
+    writeClearMarker(kind === 'register' ? REGISTER_CLEAR_KEY : LOGIN_CLEAR_KEY, marker)
   }
 
   clearLogsFor('register')
@@ -2256,6 +2263,78 @@ const filterLogsAfterMarker = (logs: TaskLogLine[], marker: TaskLogLine | null) 
   }
   // Marker not found (e.g., backend truncates to last N logs) — show current logs so new logs keep appearing.
   return logs
+}
+
+const TASK_LOG_SUMMARY_KEYWORDS = [
+  '开始',
+  '启动',
+  '创建',
+  '完成',
+  '成功',
+  '失败',
+  '中断',
+  '取消',
+  '异常',
+  '错误',
+  '告警',
+  'warning',
+  'error',
+  'critical',
+  'timeout',
+  '超时',
+  '403',
+  '429',
+  '验证码',
+  'send code',
+  'task started',
+  'task finished',
+  'task completed',
+  'task cancelled',
+  '切换',
+  '重试',
+  'retry',
+  '跳过',
+  'skip',
+]
+
+const messageHasTaskSummaryKeyword = (message: string) => {
+  const lower = message.toLowerCase()
+  return TASK_LOG_SUMMARY_KEYWORDS.some(keyword => lower.includes(keyword))
+}
+
+const isTaskSummaryLog = (log: TaskLogLine) => {
+  const level = log.level.toUpperCase()
+  if (level === 'ERROR' || level === 'WARNING' || level === 'CRITICAL') return true
+  return messageHasTaskSummaryKeyword(log.message)
+}
+
+const buildVisibleTaskLogs = (logs: TaskLogLine[]) => {
+  if (taskLogMode.value === 'detail') return logs
+  if (!logs.length) return logs
+
+  const picked: TaskLogLine[] = [logs[0]]
+  for (let i = 1; i < logs.length - 1; i += 1) {
+    if (isTaskSummaryLog(logs[i])) {
+      picked.push(logs[i])
+    }
+  }
+  if (logs.length > 1) {
+    picked.push(logs[logs.length - 1])
+  }
+
+  const deduped: TaskLogLine[] = []
+  const seen = new Set<string>()
+  for (const item of picked) {
+    const key = `${item.time}|${item.level}|${item.message}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    deduped.push(item)
+  }
+  return deduped
+}
+
+const toggleTaskLogMode = () => {
+  taskLogMode.value = taskLogMode.value === 'summary' ? 'detail' : 'summary'
 }
 
 const cancelRegister = async (taskId: string) => {
@@ -2304,6 +2383,7 @@ watch(activeTaskTab, async (newTab) => {
 })
 
 onMounted(async () => {
+  // 任务状态统一以后端为准，不做本地任务快照恢复
   hydrateTaskCache()
   await refreshAccounts()
   await loadCurrentTasks()
@@ -2319,6 +2399,8 @@ const loginLogs = computed(() => {
   const logs = loginTask.value?.logs || []
   return filterLogsAfterMarker(logs as TaskLogLine[], loginLogClearMarker.value)
 })
+const visibleRegisterLogs = computed(() => buildVisibleTaskLogs(registerLogs.value))
+const visibleLoginLogs = computed(() => buildVisibleTaskLogs(loginLogs.value))
 const scrollTaskLogsToBottom = async () => {
   await nextTick()
   const container = taskLogsRef.value
@@ -2326,7 +2408,7 @@ const scrollTaskLogsToBottom = async () => {
   container.scrollTop = container.scrollHeight
 }
 
-watch([registerLogs, loginLogs, isTaskOpen], async () => {
+watch([visibleRegisterLogs, visibleLoginLogs, isTaskOpen, taskLogMode], async () => {
   if (!isTaskOpen.value) return
   await scrollTaskLogsToBottom()
 }, { deep: true })
@@ -2369,6 +2451,9 @@ const statusLabel = (account: AdminAccount) => {
   if (refreshingAccountIds.value.has(account.id)) {
     return '刷新中'
   }
+  if (queuedRefreshAccountIds.value.has(account.id)) {
+    return '排队中'
+  }
   if (account.cooldown_reason?.includes('429') && account.cooldown_seconds > 0) {
     return '429限流'
   }
@@ -2391,6 +2476,9 @@ const statusClass = (account: AdminAccount) => {
   const status = statusLabel(account)
   if (status === '刷新中') {
     return 'bg-sky-500 text-white'
+  }
+  if (status === '排队中') {
+    return 'bg-sky-100 text-sky-700'
   }
   if (status === '429限流' || status === '即将过期') {
     return 'bg-amber-200 text-amber-900'
@@ -2846,6 +2934,11 @@ const updateRegisterTask = async (taskId: string) => {
     if (error?.status === 404 || error?.message === 'Not found') {
       clearRegisterTimer()
       isRegistering.value = false
+      const current = registerTask.value
+      if (current?.id === taskId && isTaskActive(current)) {
+        // 后端已不存在该任务，前端将其收敛为终态，保留已有日志便于排查
+        syncRegisterTask({ ...current, status: 'cancelled' } as RegisterTask)
+      }
       return
     }
     throw error
@@ -2884,18 +2977,17 @@ const updateLoginTask = async (taskId: string) => {
       clearLoginTimer()
       isRefreshing.value = false
       refreshingAccountIds.value = new Set()  // 清空刷新状态
+      queuedRefreshAccountIds.value = new Set()
+      const current = loginTask.value
+      if (current?.id === taskId && isTaskActive(current)) {
+        // 后端已不存在该任务，前端将其收敛为终态，保留已有日志便于排查
+        syncLoginTask({ ...current, status: 'cancelled' } as LoginTask)
+      }
       return
     }
     throw error
   }
   syncLoginTask(task)
-
-  // 更新正在刷新的账户列表
-  if (task.status === 'running' || task.status === 'pending') {
-    refreshingAccountIds.value = new Set(task.account_ids || [])
-  } else {
-    refreshingAccountIds.value = new Set()  // 任务完成，清空刷新状态
-  }
 
   if (task.status !== 'running' && task.status !== 'pending') {
     isRefreshing.value = false
@@ -2946,9 +3038,6 @@ const startBackgroundTaskPolling = () => {
   if (backgroundTaskTimer !== null) return
   backgroundTaskTimer = window.setInterval(async () => {
     if (backgroundTaskPending) return
-    if (isTaskOpen.value) return
-    if (registerTimer !== null || loginTimer !== null) return
-    if (!isRegistering.value && !isRefreshing.value && !registerTask.value && !loginTask.value) return
     backgroundTaskPending = true
     try {
       await loadCurrentTasks()
@@ -2991,8 +3080,6 @@ const startRefresh = async (accountIds: string[]) => {
   try {
     const task = await accountsApi.startLogin(accountIds)
     syncLoginTask(task)
-    // 更新正在刷新的账户列表
-    refreshingAccountIds.value = new Set(task.account_ids || [])
     startLoginPolling(task.id)
     // 自动打开任务状态弹窗
     openTaskModal()
@@ -3015,8 +3102,6 @@ const handleRefreshExpiring = async () => {
     const taskOrIdle = await accountsApi.checkLogin()
     if (taskOrIdle && 'id' in taskOrIdle) {
       syncLoginTask(taskOrIdle)
-      // 更新正在刷新的账户列表
-      refreshingAccountIds.value = new Set(taskOrIdle.account_ids || [])
       startLoginPolling(taskOrIdle.id)
       // 自动打开任务状态弹窗
       openTaskModal()
@@ -3026,8 +3111,6 @@ const handleRefreshExpiring = async () => {
     const current = await accountsApi.getLoginCurrent()
     if (current && 'id' in current) {
       syncLoginTask(current)
-      // 更新正在刷新的账户列表
-      refreshingAccountIds.value = new Set(current.account_ids || [])
       startLoginPolling(current.id)
       openTaskModal()
       return

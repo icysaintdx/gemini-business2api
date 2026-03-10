@@ -78,13 +78,13 @@ cd gemini-business2api
 cp .env.example .env
 # 编辑 .env 设置 ADMIN_KEY
 
-docker-compose up -d
+docker compose up -d
 
 # 查看日志
-docker-compose logs -f
+docker compose logs -f
 
 # 更新到最新版本
-docker-compose pull && docker-compose up -d
+docker compose pull && docker compose up -d
 ```
 
 ---
@@ -153,7 +153,8 @@ python main.py
 
 ## 🗄️ 数据库持久化
 
-设置 `DATABASE_URL` 可将账户、设置、统计写入数据库，避免容器重启丢数据。未设置时自动使用 SQLite（本地 `data.db`）。
+默认不配置 `DATABASE_URL`，直接使用 SQLite（本地 `data.db`，推荐）。
+仅在必要场景（如多实例共享同一份数据、云平台无法挂载持久化目录）再使用在线数据库。
 
 **配置方式：**
 - 本地部署 → 写入 `.env`
@@ -163,7 +164,18 @@ python main.py
 DATABASE_URL=postgresql://user:password@host/dbname?sslmode=require
 ```
 
-**免费 PostgreSQL 推荐：**
+### 本地刷新服务建议（refresh-worker）
+
+- 推荐拓扑：`main` 部署在云端，`refresh-worker` 在本地机器执行浏览器刷新。
+- 推荐本地优先使用 SQLite（`data.db`）做刷新侧缓存，网络不稳定时更稳。
+- 如需由本地刷新器直接连远端面板，可使用远端接口 + `ADMIN_KEY`：
+
+```env
+REMOTE_PROJECT_BASE_URL=https://your-beta-domain.example
+REMOTE_PROJECT_PASSWORD=your_admin_key
+```
+
+**如需在线 PostgreSQL（可选）：**
 
 | 服务 | 免费额度 | 获取方式 |
 |------|---------|---------|
@@ -233,7 +245,7 @@ curl http://localhost:7860/v1/chat/completions \
 
 ## 📧 邮箱提供商配置
 
-项目支持 4 种临时邮箱，用于自动注册账号。在 **管理面板 → 系统设置 → 临时邮箱提供商** 中切换。
+项目支持 5 种临时邮箱，用于自动注册账号。在 **管理面板 → 系统设置 → 临时邮箱提供商** 中切换。
 
 ### Moemail（默认推荐）
 
@@ -265,6 +277,19 @@ curl http://localhost:7860/v1/chat/completions \
 - **项目地址**：[github.com/idinging/freemail](https://github.com/idinging/freemail)
 - **配置项**：自部署服务地址 + JWT Token + 域名（可选）
 
+### Cloudflare Mail（CFMail）
+
+基于 Cloudflare 的临时邮箱服务，适合希望自建或轻量部署的用户。
+
+- **项目地址**：[github.com/dreamhunter2333/cloudflare_temp_email](https://github.com/dreamhunter2333/cloudflare_temp_email)
+- **管理面板配置路径**：系统设置 → 临时邮箱提供商选择 `cfmail`
+- **配置项**：
+  - Cloudflare Mail API 地址（`cfmail_base_url`）
+  - 访问密码（`cfmail_api_key`，实例未启用可留空）
+  - 邮箱域名（`cfmail_domain`，可选，不带 `@`）
+- **导入格式（可选）**：`cfmail----you@example.com----jwtToken`
+  - 第三个字段是该邮箱的 JWT Token（用于拉取邮件验证码）
+
 > **提示**：所有邮箱配置均在管理面板中完成，无需手动编辑配置文件。Microsoft 邮箱登录也在管理面板中操作。
 
 ---
@@ -283,7 +308,7 @@ curl http://localhost:7860/v1/chat/completions \
 
 > Docker 镜像：`cooooookk/gemini-business2api:latest`
 >
-> 部署时设置环境变量 `ADMIN_KEY` 和 `DATABASE_URL` 即可。
+> 部署时先设置 `ADMIN_KEY`；`DATABASE_URL` 仅在必要时再配置（默认本地 `data.db` 更推荐）。
 
 ### Zeabur 部署教程
 
@@ -294,7 +319,7 @@ curl http://localhost:7860/v1/chat/completions \
    | 变量名 | 必填 | 说明 |
    |--------|------|------|
    | `ADMIN_KEY` | ✅ | 管理面板登录密钥 |
-   | `DATABASE_URL` | 可选 | PostgreSQL 连接串（推荐配置，避免重启丢数据） |
+   | `DATABASE_URL` | 可选 | PostgreSQL 连接串（仅在需要在线数据库时配置） |
 
 4. **持久化挂载目录**（重要）：
 
@@ -318,11 +343,38 @@ curl http://localhost:7860/v1/chat/completions \
 git clone -b refresh-worker https://github.com/Dreamy-rain/gemini-business2api.git gemini-refresh-worker
 cd gemini-refresh-worker
 cp .env.example .env
-# 编辑 .env 设置 DATABASE_URL
-docker-compose up -d
+# 编辑 .env（默认本地 data.db；仅在必要时设置 DATABASE_URL）
+docker compose up -d
 ```
 
 该服务从数据库读取账号，独立执行定时刷新，支持 cron 调度、分批执行、冷却防重复。适合需要刷新服务与 API 服务分离部署的场景。
+
+---
+
+## 🌿 分支使用指南
+
+为避免部署混乱，建议按场景选择分支：
+
+- `main`：稳定主线（推荐生产部署 API 与前端面板）
+- `beta`：新功能预发布线（会先于 main 更新）
+- `refresh-worker`：独立刷新服务分支（适合本地运行刷新、远端部署 API）
+- `clash-proxy`：Clash 代理场景分支（用于代理网络环境下的注册/刷新）
+
+推荐组合：
+
+- 云端部署 `main`/`beta` 提供 API 与管理面板
+- 本地部署 `refresh-worker` 负责账号注册与刷新
+- 需要 Clash 代理网络策略时使用 `clash-proxy`
+
+### Clash 代理场景示例
+
+```bash
+git clone -b clash-proxy https://github.com/Dreamy-rain/gemini-business2api.git gemini-business2api-clash
+cd gemini-business2api-clash
+cp .env.example .env
+# 编辑 .env 与面板代理配置后启动
+docker compose up -d
+```
 
 ---
 
