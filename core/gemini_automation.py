@@ -259,11 +259,8 @@ class GeminiAutomation:
         except Exception as e:
             self._log("warning", f"⚠️ Cookie 设置失败: {e}")
 
-        # Step 1.5: 通过 URL 方式提交邮箱（稳定，不触发风控）
-        login_hint = quote(email, safe="")
-        login_url = f"https://auth.business.gemini.google/login/email?continueUrl=https%3A%2F%2Fbusiness.gemini.google%2F&loginHint={login_hint}&xsrfToken={xsrf_token}"
-
-        # 先启动网络监听，再导航（避免漏掉页面加载期间的请求）
+        # Step 1.5: 提交邮箱（优先表单方式，URL 方式备用）
+        # 先启动网络监听，再提交（避免漏掉请求）
         try:
             page.listen.start(
                 targets=["batchexecute"],
@@ -274,9 +271,43 @@ class GeminiAutomation:
         except Exception:
             pass
 
-        self._log("info", "📧 使用 URL 方式提交邮箱...")
-        page.get(login_url, timeout=self.timeout)
-        time.sleep(random.uniform(3, 5))
+        form_login_ok = False
+        # 方法1: 表单方式（填写邮箱输入框 + 点击登录按钮）
+        try:
+            email_input = page.ele("css:input[name='loginHint']", timeout=5)
+            if email_input:
+                self._log("info", "📧 使用表单方式提交邮箱...")
+                email_input.click()
+                time.sleep(random.uniform(0.3, 0.6))
+                email_input.clear()
+                time.sleep(random.uniform(0.1, 0.3))
+                if not self._simulate_human_input(email_input, email):
+                    email_input.input(email, clear=True)
+                time.sleep(random.uniform(0.5, 1.0))
+
+                # 点击登录按钮（实际页面 id="log-in-button"，文字"使用邮箱继续"）
+                login_btn = page.ele("#log-in-button", timeout=3) or \
+                            page.ele("#sign-in-with-email", timeout=2)
+                if login_btn:
+                    self._human_click(page, login_btn)
+                    self._log("info", "✅ 已点击登录按钮")
+                    form_login_ok = True
+                else:
+                    # 回车提交兜底
+                    email_input.input("\n")
+                    self._log("info", "⏎ 回车提交邮箱")
+                    form_login_ok = True
+                time.sleep(random.uniform(3, 5))
+        except Exception as e:
+            self._log("warning", f"⚠️ 表单登录异常: {e}")
+
+        # 方法2: URL 方式（备用，当表单方式失败时使用）
+        if not form_login_ok:
+            login_hint = quote(email, safe="")
+            login_url = f"https://auth.business.gemini.google/login/email?continueUrl=https%3A%2F%2Fbusiness.gemini.google%2F&loginHint={login_hint}&xsrfToken={xsrf_token}"
+            self._log("info", "📧 使用 URL 方式提交邮箱（备用）...")
+            page.get(login_url, timeout=self.timeout)
+            time.sleep(random.uniform(3, 5))
 
         # 模拟真实用户行为：页面加载后随机滚动
         self._random_scroll(page)
@@ -285,11 +316,40 @@ class GeminiAutomation:
         current_url = page.url
         self._log("info", f"📍 当前 URL: {current_url}")
 
-        # 检测 signin-error 页面（极端情况，一般 URL 方式不会触发）
+        # 检测 signin-error 页面
         if "signin-error" in current_url:
-            self._log("error", "❌ 进入 signin-error 页面，可能是代理或网络问题")
+            # 如果是 URL 方式导致的 signin-error，尝试回到登录页用表单方式重试
+            self._log("warning", "⚠️ 进入 signin-error 页面，尝试回到登录页重新提交...")
             self._save_screenshot(page, "signin_error")
-            return {"success": False, "error": "signin-error: token rejected by Google, try changing proxy"}
+            try:
+                page.get(AUTH_HOME_URL, timeout=self.timeout)
+                time.sleep(random.uniform(2, 4))
+                email_input = page.ele("css:input[name='loginHint']", timeout=5)
+                if email_input:
+                    email_input.click()
+                    time.sleep(random.uniform(0.3, 0.6))
+                    email_input.clear()
+                    time.sleep(random.uniform(0.1, 0.3))
+                    if not self._simulate_human_input(email_input, email):
+                        email_input.input(email, clear=True)
+                    time.sleep(random.uniform(0.5, 1.0))
+                    login_btn = page.ele("#log-in-button", timeout=3) or page.ele("#sign-in-with-email", timeout=2)
+                    if login_btn:
+                        self._human_click(page, login_btn)
+                        self._log("info", "✅ 表单方式重新提交邮箱")
+                        time.sleep(random.uniform(3, 5))
+                        current_url = page.url
+                        self._log("info", f"📍 重试后 URL: {current_url}")
+                    else:
+                        email_input.input("\n")
+                        time.sleep(random.uniform(3, 5))
+                        current_url = page.url
+            except Exception as e:
+                self._log("warning", f"⚠️ 表单重试异常: {e}")
+            # 如果仍在 signin-error，才报错退出
+            if "signin-error" in (page.url or ""):
+                self._log("error", "❌ 重试后仍在 signin-error 页面，可能是代理或网络问题")
+                return {"success": False, "error": "signin-error: rejected by Google, try changing proxy"}
 
         has_business_params = "business.gemini.google" in current_url and "csesidx=" in current_url and "/cid/" in current_url
 
@@ -329,7 +389,15 @@ class GeminiAutomation:
         # Step 5: 轮询邮件获取验证码（3次，每次5秒间隔）
         self._log("info", "📬 等待邮箱验证码...")
         poll_since_time = task_start_time - timedelta(seconds=30)
-        first_timeout = 30 if self._last_send_confidence == "confirmed" else 20
+        # 根据发送状态动态调整首次轮询超时
+        if self._last_send_confidence == "confirmed":
+            first_timeout = 60
+        elif self._last_send_confidence == "unknown":
+            # 页面已在验证码输入页，Google 大概率已发送，给足够时间等待
+            first_timeout = 60
+        else:
+            # 发送状态不确定或失败，也给予足够时间
+            first_timeout = 45
         self._log("info", f"📬 等待邮箱验证码 (窗口 {first_timeout}s, 发送状态={self._last_send_confidence})")
         code = mail_client.poll_for_code(timeout=first_timeout, interval=5, since_time=poll_since_time)
 
@@ -351,7 +419,7 @@ class GeminiAutomation:
                     self._log("warning", f"⚠️ 未找到重发按钮 ({resend_index}/{resend_attempts})")
                     continue
 
-                resend_timeout = 25 if self._last_send_confidence == "confirmed" else 15
+                resend_timeout = 45 if self._last_send_confidence == "confirmed" else 30
                 self._log("info", f"📬 已执行重发，继续轮询 (窗口 {resend_timeout}s, 发送状态={self._last_send_confidence}, 第 {resend_index} 次重发)")
                 code = mail_client.poll_for_code(timeout=resend_timeout, interval=5, since_time=poll_since_time)
                 if code:
@@ -480,8 +548,17 @@ class GeminiAutomation:
         # 适度退避延迟序列（秒）
         retry_delays = [10, 10, 15, 15, 20]
 
-        # 方法1: 直接通过ID查找
-        direct_btn = page.ele("#sign-in-with-email", timeout=5)
+        # 优先检查：是否已经在验证码输入页面（表单登录成功后会直接跳到此页面）
+        code_input = page.ele("css:input[jsname='ovqh0b']", timeout=2) or page.ele("css:input[name='pinInput']", timeout=1)
+        if code_input:
+            self._stop_listen(page)
+            self._log("info", "✅ 已在验证码输入页面（验证码已通过登录按钮触发发送）")
+            # 页面已在验证码输入页说明 Google 已处理邮箱提交，验证码大概率已发送
+            self._last_send_confidence = "unknown"
+            return True
+
+        # 方法1: 直接通过ID查找登录按钮（实际页面 id="log-in-button"）
+        direct_btn = page.ele("#log-in-button", timeout=3) or page.ele("#sign-in-with-email", timeout=2)
         if direct_btn:
             for attempt in range(1, max_send_attempts + 1):
                 try:
@@ -502,7 +579,11 @@ class GeminiAutomation:
             return False
 
         # 方法2: 通过关键词查找
-        keywords = ["通过电子邮件发送验证码", "通过电子邮件发送", "email", "Email", "Send code", "Send verification", "Verification code"]
+        keywords = [
+            "通过电子邮件发送验证码", "通过电子邮件发送", "发送验证码", "发送代码",
+            "email", "Email", "Send code", "Send verification", "Verification code",
+            "Send a verification", "Get a verification", "Send email code",
+        ]
         try:
             buttons = page.eles("tag:button")
             for btn in buttons:
@@ -534,22 +615,25 @@ class GeminiAutomation:
             self._log("error", "❌ 在 signin-error 页面，无法发送验证码")
             return False
 
-        # 检查是否已经在验证码输入页面
+        # 再次检查：是否在等待过程中到达了验证码输入页面
         code_input = page.ele("css:input[jsname='ovqh0b']", timeout=2) or page.ele("css:input[name='pinInput']", timeout=1)
         if code_input:
             self._stop_listen(page)
             self._log("info", "✅ 已在验证码输入页面")
-
-            # 直接点击重新发送按钮（不管之前是否发送过）
-            if self._click_resend_code_button(page):
-                self._log("info", "✅ 已点击重新发送按钮")
-                return True
-            else:
-                self._log("warning", "⚠️ 未找到重新发送按钮，继续流程")
-                return True
+            self._last_send_confidence = "unknown"
+            return True
 
         self._stop_listen(page)
-        self._log("error", "❌ 未找到发送验证码按钮")
+        # 输出诊断信息帮助远程排查
+        try:
+            self._log("error", f"❌ 未找到发送验证码按钮 | URL: {page.url}")
+            buttons = page.eles("tag:button")
+            btn_texts = [f"[{(b.text or '').strip()[:40]}]" for b in buttons[:10] if (b.text or "").strip()]
+            if btn_texts:
+                self._log("error", f"❌ 页面按钮列表: {', '.join(btn_texts)}")
+            self._save_screenshot(page, "no_send_button")
+        except Exception:
+            pass
         return False
 
     def _stop_listen(self, page) -> None:
@@ -839,14 +923,22 @@ class GeminiAutomation:
         except Exception:
             pass
 
-        # 查找包含重新发送关键词的按钮（与 _find_verify_button 相反）
+        # 扩展关键词匹配（覆盖 Google 页面中英文各种写法）
+        resend_keywords = [
+            "重新", "重发", "再次发送", "再发送", "再试", "重试",
+            "没有收到", "未收到", "再次获取", "重新获取", "重新发送",
+            "resend", "re-send", "send again", "try again",
+            "didn't receive", "not received", "get new code",
+        ]
+
+        # 方法1: 搜索 button 标签
         try:
             buttons = page.eles("tag:button")
             for btn in buttons:
                 text = (btn.text or "").strip().lower()
-                if text and ("重新" in text or "resend" in text):
+                if text and any(kw in text for kw in resend_keywords):
                     try:
-                        self._log("info", f"🔄 点击重新发送按钮")
+                        self._log("info", f"🔄 点击重新发送按钮: {text[:30]}")
                         self._human_click(page, btn)
                         network_ok = self._verify_code_send_by_network(page)
                         ui_state = self._verify_code_send_status(page)
@@ -865,11 +957,39 @@ class GeminiAutomation:
         except Exception:
             pass
 
+        # 方法2: 搜索 a 标签和 span 标签（Google 有时用链接而非按钮）
+        for tag in ("tag:a", "tag:span"):
+            try:
+                elements = page.eles(tag)
+                for elem in elements:
+                    text = (elem.text or "").strip().lower()
+                    if text and any(kw in text for kw in resend_keywords):
+                        try:
+                            self._log("info", f"🔄 点击重新发送链接: {text[:30]}")
+                            self._human_click(page, elem)
+                            time.sleep(2)
+                            self._last_send_confidence = "unknown"
+                            self._stop_listen(page)
+                            return True
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+
+        # 诊断: 列出页面上所有按钮文本，帮助远程排查
+        try:
+            buttons = page.eles("tag:button")
+            btn_texts = [f"[{(b.text or '').strip()[:40]}]" for b in buttons[:10] if (b.text or "").strip()]
+            if btn_texts:
+                self._log("warning", f"⚠️ 重发按钮未匹配，页面按钮: {', '.join(btn_texts)}")
+        except Exception:
+            pass
+
         self._last_send_confidence = "failed"
         self._stop_listen(page)
         return False
 
-    def _check_access_restricted(self, page, email: str = "") -> dict | None:
+    def _check_access_restricted(self, page, email: str):
         """检测 403 Access Restricted 页面，返回错误 dict 或 None"""
         domain = email.split("@")[1] if "@" in email else "unknown"
         error_msg = f"403 域名封禁 ({domain})"
