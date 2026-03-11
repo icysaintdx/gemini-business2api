@@ -136,7 +136,8 @@ class GeminiAutomation:
             self.browser_mode = BROWSER_MODE_NORMAL
             self.headless = False
 
-        # 基础参数（不使用 --incognito，与 zhuce.py 保持一致）
+        # 基础参数（与原版保持一致，使用 --incognito 隐私模式避免残留指纹）
+        options.set_argument("--incognito")
         options.set_argument("--no-sandbox")
         options.set_argument("--disable-dev-shm-usage")
         options.set_argument("--disable-setuid-sandbox")
@@ -183,45 +184,18 @@ class GeminiAutomation:
         if self.browser_mode == BROWSER_MODE_SILENT:
             self._minimize_window(page)
 
-        # 反自动化检测 JS 注入（参考 undetected_chromedriver 的策略）
+        # 最小化 JS 注入（仅补充 window.chrome 对象）
+        # 注意：不使用 Object.defineProperty 覆盖 navigator 属性，
+        # Google reCAPTCHA/风控会检测属性描述符篡改，反而暴露自动化特征。
+        # DrissionPage 本身不暴露 navigator.webdriver（不同于 Selenium），无需额外隐藏。
         try:
             page.run_cdp("Page.addScriptToEvaluateOnNewDocument", source="""
-                // 1. 隐藏 navigator.webdriver 标识
-                Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
-
-                // 2. 确保 window.chrome 存在且结构正确
                 if (!window.chrome) {
                     window.chrome = {runtime: {}, loadTimes: function(){return {}}, csi: function(){return {}}};
                 }
                 if (!window.chrome.runtime) {
                     window.chrome.runtime = {};
                 }
-
-                // 3. 模拟真实的 plugins 和 mimeTypes（防止空数组检测）
-                Object.defineProperty(navigator, 'plugins', {
-                    get: () => {
-                        const arr = [
-                            {name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer', description: 'Portable Document Format'},
-                            {name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai', description: ''},
-                            {name: 'Native Client', filename: 'internal-nacl-plugin', description: ''}
-                        ];
-                        arr.item = (i) => arr[i];
-                        arr.namedItem = (n) => arr.find(p => p.name === n);
-                        arr.refresh = () => {};
-                        return arr;
-                    }
-                });
-
-                // 4. 设置正确的语言属性
-                Object.defineProperty(navigator, 'languages', {get: () => ['zh-CN', 'zh', 'en']});
-
-                // 5. 隐藏自动化相关的 permission 检测
-                const originalQuery = window.navigator.permissions.query;
-                window.navigator.permissions.query = (parameters) => (
-                    parameters.name === 'notifications' ?
-                        Promise.resolve({state: Notification.permission}) :
-                        originalQuery(parameters)
-                );
             """)
         except Exception:
             pass
@@ -282,7 +256,8 @@ class GeminiAutomation:
         page.get(AUTH_HOME_URL, timeout=self.timeout)
         time.sleep(random.uniform(2, 4))
 
-        # Step 1.5: 表单方式提交邮箱（参照 zhuce.py 的方式，不操作 XSRF）
+        # Step 1.5: 提交邮箱（主要方式：URL 导航，与原版一致）
+        # URL 方式比表单填写更接近正常浏览器跳转行为，不易触发 Google 风控
         # 先启动网络监听
         try:
             page.listen.start(
@@ -294,57 +269,13 @@ class GeminiAutomation:
         except Exception:
             pass
 
-        # 填写邮箱并点击登录按钮（与 zhuce.py 保持一致的简洁流程）
-        form_login_ok = False
-        try:
-            # 使用多种选择器查找邮箱输入框（CSS + XPath 兜底）
-            email_input = page.ele("css:input[name='loginHint']", timeout=5)
-            if not email_input:
-                # zhuce.py 使用的 XPath
-                email_input = page.ele("xpath:/html/body/c-wiz/div/div/div[1]/div/div/div/form/div[1]/div[1]/div/span[2]/input", timeout=3)
-            if email_input:
-                self._log("info", "📧 填写邮箱...")
-                email_input.click()
-                time.sleep(random.uniform(0.2, 0.5))
-                email_input.clear()
-                time.sleep(random.uniform(0.1, 0.3))
-                if not self._simulate_human_input(email_input, email):
-                    email_input.input(email, clear=True)
-                time.sleep(random.uniform(0.3, 0.8))
-
-                # 查找并点击登录按钮
-                login_btn = (
-                    page.ele("#log-in-button", timeout=3) or
-                    page.ele("#sign-in-with-email", timeout=2) or
-                    page.ele("xpath:/html/body/c-wiz/div/div/div[1]/div/div/div/form/div[2]/div/button", timeout=2)
-                )
-                if login_btn:
-                    # 用 JS 点击（与 zhuce.py 一致: driver.execute_script("arguments[0].click();", btn)）
-                    try:
-                        page.run_js("arguments[0].click();", login_btn)
-                    except Exception:
-                        self._human_click(page, login_btn)
-                    self._log("info", "✅ 已点击登录按钮")
-                    form_login_ok = True
-                else:
-                    # 回车兜底
-                    email_input.input("\n")
-                    self._log("info", "⏎ 回车提交邮箱")
-                    form_login_ok = True
-                time.sleep(random.uniform(3, 5))
-            else:
-                self._log("warning", "⚠️ 未找到邮箱输入框")
-        except Exception as e:
-            self._log("warning", f"⚠️ 表单登录异常: {e}")
-
-        # 备用: URL 方式（仅当表单完全失败时）
-        if not form_login_ok:
-            xsrf_token = self._extract_xsrf_token(page)
-            login_hint = quote(email, safe="")
-            login_url = f"https://auth.business.gemini.google/login/email?continueUrl=https%3A%2F%2Fbusiness.gemini.google%2F&loginHint={login_hint}&xsrfToken={xsrf_token}"
-            self._log("info", "📧 使用 URL 方式提交邮箱（备用）...")
-            page.get(login_url, timeout=self.timeout)
-            time.sleep(random.uniform(3, 5))
+        # 从页面提取真实 XSRF token，构造登录 URL 直接导航
+        xsrf_token = self._extract_xsrf_token(page)
+        login_hint = quote(email, safe="")
+        login_url = f"https://auth.business.gemini.google/login/email?continueUrl=https%3A%2F%2Fbusiness.gemini.google%2F&loginHint={login_hint}&xsrfToken={xsrf_token}"
+        self._log("info", "📧 通过 URL 导航提交邮箱...")
+        page.get(login_url, timeout=self.timeout)
+        time.sleep(random.uniform(3, 5))
 
         # 模拟真实用户行为：页面加载后随机滚动
         self._random_scroll(page)
@@ -355,44 +286,40 @@ class GeminiAutomation:
 
         # 检测 signin-error 页面
         if "signin-error" in current_url:
-            # 如果是 URL 方式导致的 signin-error，尝试回到登录页用表单方式重试
-            self._log("warning", "⚠️ 进入 signin-error 页面，尝试回到登录页重新提交...")
+            # signin-error 通常表示 Google 风控拦截，尝试重新导航
+            self._log("warning", "⚠️ 进入 signin-error 页面，尝试重新提交...")
             self._save_screenshot(page, "signin_error")
-            try:
-                page.get(AUTH_HOME_URL, timeout=self.timeout)
-                time.sleep(random.uniform(2, 4))
-                email_input = page.ele("css:input[name='loginHint']", timeout=5)
-                if email_input:
-                    email_input.click()
-                    time.sleep(random.uniform(0.3, 0.6))
-                    email_input.clear()
-                    time.sleep(random.uniform(0.1, 0.3))
-                    if not self._simulate_human_input(email_input, email):
-                        email_input.input(email, clear=True)
-                    time.sleep(random.uniform(0.5, 1.0))
-                    login_btn = (
-                        page.ele("#log-in-button", timeout=3) or
-                        page.ele("#sign-in-with-email", timeout=2) or
-                        page.ele("xpath:/html/body/c-wiz/div/div/div[1]/div/div/div/form/div[2]/div/button", timeout=2)
-                    )
-                    if login_btn:
-                        try:
-                            page.run_js("arguments[0].click();", login_btn)
-                        except Exception:
-                            self._human_click(page, login_btn)
-                        self._log("info", "✅ 表单方式重新提交邮箱")
-                        time.sleep(random.uniform(3, 5))
-                        current_url = page.url
-                        self._log("info", f"📍 重试后 URL: {current_url}")
-                    else:
-                        email_input.input("\n")
-                        time.sleep(random.uniform(3, 5))
-                        current_url = page.url
-            except Exception as e:
-                self._log("warning", f"⚠️ 表单重试异常: {e}")
-            # 如果仍在 signin-error，才报错退出
+
+            max_signin_retries = 3
+            for retry_idx in range(1, max_signin_retries + 1):
+                try:
+                    wait_time = random.uniform(3 + retry_idx * 2, 5 + retry_idx * 3)
+                    self._log("info", f"⏳ 等待 {wait_time:.0f}s 后第 {retry_idx}/{max_signin_retries} 次重试...")
+                    time.sleep(wait_time)
+
+                    # 重新导航到登录首页，提取新的 XSRF token
+                    page.get(AUTH_HOME_URL, timeout=self.timeout)
+                    time.sleep(random.uniform(2, 4))
+                    self._random_scroll(page)
+
+                    xsrf_token = self._extract_xsrf_token(page)
+                    retry_url = f"https://auth.business.gemini.google/login/email?continueUrl=https%3A%2F%2Fbusiness.gemini.google%2F&loginHint={login_hint}&xsrfToken={xsrf_token}"
+                    page.get(retry_url, timeout=self.timeout)
+                    time.sleep(random.uniform(3, 5))
+
+                    current_url = page.url
+                    self._log("info", f"📍 重试后 URL: {current_url}")
+
+                    if "signin-error" not in (current_url or ""):
+                        self._log("info", f"✅ 第 {retry_idx} 次重试成功，已脱离 signin-error")
+                        break
+                except Exception as e:
+                    self._log("warning", f"⚠️ 第 {retry_idx} 次重试异常: {e}")
+
+            # 如果所有重试后仍在 signin-error，才报错退出
             if "signin-error" in (page.url or ""):
-                self._log("error", "❌ 重试后仍在 signin-error 页面，可能是代理或网络问题")
+                self._log("error", f"❌ {max_signin_retries} 次重试后仍在 signin-error 页面，可能是代理IP被Google拦截")
+                self._save_screenshot(page, "signin_error_final")
                 return {"success": False, "error": "signin-error: rejected by Google, try changing proxy"}
 
         has_business_params = "business.gemini.google" in current_url and "csesidx=" in current_url and "/cid/" in current_url
@@ -430,18 +357,18 @@ class GeminiAutomation:
             self._save_screenshot(page, "code_input_missing")
             return {"success": False, "error": "code input not found"}
 
-        # Step 5: 轮询邮件获取验证码（3次，每次5秒间隔）
+        # Step 5: 轮询邮件获取验证码
         self._log("info", "📬 等待邮箱验证码...")
         poll_since_time = task_start_time - timedelta(seconds=30)
-        # 根据发送状态动态调整首次轮询超时
+        # 根据发送状态动态调整首次轮询超时（邮件投递通常需要 30-60s）
         if self._last_send_confidence == "confirmed":
-            first_timeout = 60
+            first_timeout = 90
         elif self._last_send_confidence == "unknown":
             # 页面已在验证码输入页，Google 大概率已发送，给足够时间等待
-            first_timeout = 60
+            first_timeout = 90
         else:
-            # 发送状态不确定或失败，也给予足够时间
-            first_timeout = 45
+            # 发送状态不确定或失败，也给予充足时间（邮件可能延迟到达）
+            first_timeout = 60
         self._log("info", f"📬 等待邮箱验证码 (窗口 {first_timeout}s, 发送状态={self._last_send_confidence})")
         code = mail_client.poll_for_code(timeout=first_timeout, interval=5, since_time=poll_since_time)
 
@@ -463,7 +390,7 @@ class GeminiAutomation:
                     self._log("warning", f"⚠️ 未找到重发按钮 ({resend_index}/{resend_attempts})")
                     continue
 
-                resend_timeout = 45 if self._last_send_confidence == "confirmed" else 30
+                resend_timeout = 60 if self._last_send_confidence == "confirmed" else 45
                 self._log("info", f"📬 已执行重发，继续轮询 (窗口 {resend_timeout}s, 发送状态={self._last_send_confidence}, 第 {resend_index} 次重发)")
                 code = mail_client.poll_for_code(timeout=resend_timeout, interval=5, since_time=poll_since_time)
                 if code:
@@ -973,6 +900,7 @@ class GeminiAutomation:
             "没有收到", "未收到", "再次获取", "重新获取", "重新发送",
             "resend", "re-send", "send again", "try again",
             "didn't receive", "not received", "get new code",
+            "send code", "send verification",
         ]
 
         # 方法1: 搜索 button 标签
@@ -1002,7 +930,7 @@ class GeminiAutomation:
             pass
 
         # 方法2: 搜索 a 标签和 span 标签（Google 有时用链接而非按钮）
-        for tag in ("tag:a", "tag:span"):
+        for tag in ("tag:a", "tag:span", "tag:div"):
             try:
                 elements = page.eles(tag)
                 for elem in elements:
@@ -1020,12 +948,64 @@ class GeminiAutomation:
             except Exception:
                 pass
 
-        # 诊断: 列出页面上所有按钮文本，帮助远程排查
+        # 方法3: 通过 jsname/jsaction 属性查找可点击元素（Google 特有标记）
+        try:
+            clickable_selectors = [
+                "css:[jsname][role='link']",
+                "css:[jsaction*='resend']",
+                "css:[data-action*='resend']",
+                "css:a[href*='resend']",
+            ]
+            for selector in clickable_selectors:
+                try:
+                    elem = page.ele(selector, timeout=1)
+                    if elem:
+                        text = (elem.text or "").strip()
+                        self._log("info", f"🔄 通过属性匹配点击重发: {text[:30] or selector}")
+                        self._human_click(page, elem)
+                        time.sleep(2)
+                        self._last_send_confidence = "unknown"
+                        self._stop_listen(page)
+                        return True
+                except Exception:
+                    continue
+        except Exception:
+            pass
+
+        # 方法4: JS 直接触发重发（最后手段）
+        try:
+            js_result = page.run_js("""
+                // 搜索所有可点击元素，找包含 resend/重新 文本的
+                const allElements = document.querySelectorAll('button, a, span[role="link"], [jsname], [tabindex]');
+                for (const el of allElements) {
+                    const text = (el.textContent || '').toLowerCase();
+                    if (text.includes('resend') || text.includes('重新') || text.includes('再次') || text.includes('send again')) {
+                        el.click();
+                        return true;
+                    }
+                }
+                return false;
+            """)
+            if js_result:
+                self._log("info", "🔄 通过 JS 触发重发点击")
+                time.sleep(2)
+                self._last_send_confidence = "unknown"
+                self._stop_listen(page)
+                return True
+        except Exception:
+            pass
+
+        # 诊断: 列出页面上所有可见元素文本，帮助远程排查
         try:
             buttons = page.eles("tag:button")
             btn_texts = [f"[{(b.text or '').strip()[:40]}]" for b in buttons[:10] if (b.text or "").strip()]
+            links = page.eles("tag:a")
+            link_texts = [f"[{(a.text or '').strip()[:40]}]" for a in links[:10] if (a.text or "").strip()]
             if btn_texts:
                 self._log("warning", f"⚠️ 重发按钮未匹配，页面按钮: {', '.join(btn_texts)}")
+            if link_texts:
+                self._log("warning", f"⚠️ 页面链接: {', '.join(link_texts)}")
+            self._save_screenshot(page, "resend_button_not_found")
         except Exception:
             pass
 
