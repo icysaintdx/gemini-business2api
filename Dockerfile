@@ -41,6 +41,7 @@ RUN apt-get update && \
 # 复制后端代码
 COPY main.py .
 COPY core ./core
+COPY proxy ./proxy
 COPY util ./util
 COPY scripts ./scripts
 
