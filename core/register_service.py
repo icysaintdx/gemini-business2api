@@ -101,6 +101,13 @@ class RegisterService(BaseTaskService[RegisterTask]):
         loop = asyncio.get_running_loop()
         self._append_log(task, "info", f"🚀 注册任务已启动 (共 {task.count} 个账号)")
 
+        # 初始化代理池（如果启用）
+        proxy_pool = None
+        try:
+            proxy_pool = await loop.run_in_executor(self._executor, self._init_proxy_pool, task)
+        except Exception as e:
+            self._append_log(task, "warning", f"⚠️ 代理池初始化失败: {e}，将使用配置代理")
+
         for idx in range(task.count):
             if task.cancel_requested:
                 self._append_log(task, "warning", f"register task cancelled: {task.cancel_reason or 'cancelled'}")
@@ -110,7 +117,7 @@ class RegisterService(BaseTaskService[RegisterTask]):
 
             try:
                 self._append_log(task, "info", f"📊 进度: {idx + 1}/{task.count}")
-                result = await loop.run_in_executor(self._executor, self._register_one, domain, mail_provider, task)
+                result = await loop.run_in_executor(self._executor, self._register_one, domain, mail_provider, task, proxy_pool)
             except TaskCancelledError:
                 task.status = TaskStatus.CANCELLED
                 task.finished_at = time.time()
@@ -143,9 +150,34 @@ class RegisterService(BaseTaskService[RegisterTask]):
         else:
             task.status = TaskStatus.SUCCESS if task.fail_count == 0 else TaskStatus.FAILED
         task.finished_at = time.time()
+
+        # 输出代理池统计
+        if proxy_pool:
+            stats = proxy_pool.get_stats()
+            self._append_log(task, "info", f"📊 代理池统计: 可用={stats['available']}, 已用完={stats['exhausted']}, 失败={stats['failed']}, 累计使用={stats['total_uses']}")
+
         self._append_log(task, "info", f"🏁 注册任务完成 (成功: {task.success_count}, 失败: {task.fail_count}, 总计: {task.count})")
 
-    def _register_one(self, domain: Optional[str], mail_provider: Optional[str], task: RegisterTask) -> dict:
+    def _init_proxy_pool(self, task: RegisterTask):
+        """初始化代理池（在线程中执行）"""
+        try:
+            from proxy import get_proxy_pool
+            pool = get_proxy_pool(task_count=task.count)
+            if pool:
+                stats = pool.get_stats()
+                self._append_log(task, "info", f"✅ 代理池初始化成功 (可用代理: {stats['available']}, 预计可注册: {stats['available'] * 3}-{stats['available'] * 4} 个账号)")
+                return pool
+            else:
+                self._append_log(task, "info", "ℹ️ 代理池未启用 (PROXY_ENABLED=false)，使用配置代理")
+                return None
+        except ImportError:
+            self._append_log(task, "info", "ℹ️ 代理池模块未安装，使用配置代理")
+            return None
+        except Exception as e:
+            self._append_log(task, "warning", f"⚠️ 代理池初始化失败: {e}，使用配置代理")
+            return None
+
+    def _register_one(self, domain: Optional[str], mail_provider: Optional[str], task: RegisterTask, proxy_pool=None) -> dict:
         """注册单个账户"""
         log_cb = lambda level, message: self._append_log(task, level, message)
 
@@ -178,13 +210,39 @@ class RegisterService(BaseTaskService[RegisterTask]):
 
         browser_mode = (config.basic.browser_mode or "normal").strip().lower()
         headless = config.basic.browser_headless
-        proxy_for_auth, _ = parse_proxy_setting(config.basic.proxy_for_auth)
 
-        log_cb("info", f"🌐 步骤 2/3: 启动浏览器 (模式={browser_mode}, 无头={headless})...")
+        # 获取代理：优先从代理池获取，降级使用配置代理
+        proxy_entry = None
+        relay = None
+        proxy_for_browser = ""
+
+        if proxy_pool:
+            proxy_entry = proxy_pool.acquire()
+            if proxy_entry:
+                try:
+                    from proxy import LocalSocksRelay
+                    relay = LocalSocksRelay(
+                        proxy_entry.host, proxy_entry.port,
+                        proxy_entry.username, proxy_entry.password,
+                    )
+                    relay.start()
+                    proxy_for_browser = f"socks5://127.0.0.1:{relay.port}"
+                    log_cb("info", f"🌐 使用代理池代理: {proxy_entry.display_addr} -> 本地端口 {relay.port}")
+                except Exception as e:
+                    log_cb("warning", f"⚠️ 代理中继启动失败: {e}，降级使用配置代理")
+                    proxy_entry = None
+                    relay = None
+            else:
+                log_cb("warning", "⚠️ 代理池已无可用代理，使用配置代理")
+
+        if not proxy_for_browser:
+            proxy_for_browser, _ = parse_proxy_setting(config.basic.proxy_for_auth)
+
+        log_cb("info", f"🌐 步骤 2/3: 启动浏览器 (模式={browser_mode}, 无头={headless}, 代理={'代理池' if proxy_entry else ('配置' if proxy_for_browser else '直连')})...")
 
         automation = GeminiAutomation(
             user_agent=self.user_agent,
-            proxy=proxy_for_auth,
+            proxy=proxy_for_browser,
             browser_mode=browser_mode,
             log_callback=log_cb,
         )
@@ -196,12 +254,29 @@ class RegisterService(BaseTaskService[RegisterTask]):
             result = automation.login_and_extract(client.email, client, is_new_account=True)
         except Exception as exc:
             log_cb("error", f"❌ 自动登录异常: {exc}")
+            # 报告代理失败
+            if proxy_pool and proxy_entry:
+                proxy_pool.report_failure(proxy_entry)
             return {"success": False, "error": str(exc)}
+        finally:
+            # 清理代理中继
+            if relay:
+                try:
+                    relay.stop()
+                except Exception:
+                    pass
 
         if not result.get("success"):
             error = result.get("error", "自动化流程失败")
             log_cb("error", f"❌ 自动登录失败: {error}")
+            # 报告代理失败
+            if proxy_pool and proxy_entry:
+                proxy_pool.report_failure(proxy_entry)
             return {"success": False, "error": error}
+
+        # 报告代理成功
+        if proxy_pool and proxy_entry:
+            proxy_pool.report_success(proxy_entry)
 
         log_cb("info", "✅ Gemini 登录成功，正在保存配置...")
 
